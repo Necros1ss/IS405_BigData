@@ -9,6 +9,9 @@ __pycache__/
 *.pyd
 *.egg-info/
 .eggs/
+.pytest_cache/
+htmlcov/
+.coverage
 
 # Jupyter
 .ipynb_checkpoints/
@@ -45,3 +48,4 @@ id_rsa*
 # Others
 *.zip
 *.tar.gz
+
