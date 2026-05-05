@@ -67,7 +67,7 @@ class TestTrainSpark(unittest.TestCase):
 
         self.assertIn("feature_importances", metrics)
         importances = metrics["feature_importances"]
-        self.assertEqual(len(importances), 5)
+        self.assertEqual(len(importances), 4)
         self.assertTrue(all(0 <= v <= 1 for v in importances.values()))
 
     def test_predictions_have_label_column(self):

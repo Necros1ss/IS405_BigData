@@ -4,11 +4,11 @@
 
 | File | Mô tả | Dòng code |
 |------|-------|----------|
-| `app/streaming_spark.py` | Spark streaming pipeline (cập nhật) | 350+ |
+| `app/streaming_spark.py` | Spark Structured Streaming + Kafka inference | 350+ |
 | `app/producer_youtube.py` | Gửi synthetic video data → Kafka | 120+ |
 | `app/consumer_predictions.py` | Xem predictions realtime | 100+ |
+| `app/app_spark.py` | Batch training + model export | 220+ |
 | `STREAMING_GUIDE.md` | Hướng dẫn chi tiết | 400+ |
-| `STREAMING_IMPLEMENTATION.md` | Tổng quan & checklist | 300+ |
 | `test_streaming_setup.py` | Kiểm tra hệ thống sẵn sàng | 150+ |
 
 **Total:** 1400+ dòng code mới cho streaming! 🚀
@@ -27,8 +27,13 @@ mv kafka_2.13-3.6.0 ~/kafka
 
 ### Bước 2: Kiểm tra setup
 ```bash
-cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+cd "/path/to/FINAL PROJECT"
 python3 test_streaming_setup.py  # ✅ Sẽ báo everything is ready
+```
+
+Nếu dùng Spark streaming với Kafka connector, nhớ đặt thêm:
+```bash
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
 ```
 
 ### Bước 3: Chạy streaming (6 terminals)
@@ -50,6 +55,7 @@ python3 test_streaming_setup.py  # ✅ Sẽ báo everything is ready
 ```json
 {
   "video_id": "vid_123",
+  "event_time": "2026-05-05T10:15:30Z",
   "title": "Amazing Video",
   "view_count": 500000,
   "like_count": 40000,
@@ -64,7 +70,12 @@ python3 test_streaming_setup.py  # ✅ Sẽ báo everything is ready
 ```json
 {
   "video_id": "vid_123",
+  "event_time": "2026-05-05T10:15:30Z",
   "title": "Amazing Video",
+  "tag_count": 2,
+  "description_length": 21,
+  "like_ratio": 0.08,
+  "comment_ratio": 0.004,
   "engagement": 42000,
   "trending": 1,           ← Dự đoán (1=trending, 0=not)
   "prob_trending": 0.85    ← Độ tin cậy
@@ -83,6 +94,9 @@ python3 -m app.streaming_spark --output console
 python3 -m app.streaming_spark \
   --output console \
   --model-path /tmp/rf_model
+
+# Train model batch trước khi chạy realtime
+python3 -m app.app_spark --data <path-to-csv> --no-sample --save-model /tmp/rf_model
 
 # Production mode (output → Kafka topic)
 python3 -m app.streaming_spark \
@@ -105,7 +119,7 @@ python3 -m app.consumer_predictions --topic youtube_predictions
 ## ❓ FAQ
 
 **Q: Cần model không?**  
-A: Không bắt buộc. Nếu không có `--model-path`, pipeline sẽ process features nhưng không predict trending.
+A: Không bắt buộc để chạy parse/feature, nhưng để có prediction thì cần `--model-path` trỏ tới model đã train batch.
 
 **Q: Làm sao train model?**  
 A: Chạy batch pipeline trước:
@@ -115,10 +129,10 @@ python3 -m app.app_spark --data youtube_large_sample.csv \
 ```
 
 **Q: Có thể gửi data thực không?**  
-A: Có! Producer sinh dữ liệu mô phỏng, nhưng có thể sửa `create_synthetic_video()` để lấy từ API/database.
+A: Có. Producer hiện sinh dữ liệu mô phỏng, nhưng bạn có thể thay `create_synthetic_video()` bằng API YouTube hoặc service thu thập log thật.
 
 **Q: Latency như thế nào?**  
-A: ~500ms/batch. Tùy thuộc vào Kafka batch size.
+A: Là micro-batch streaming, độ trễ phụ thuộc trigger interval, Kafka, và Spark cluster.
 
 **Q: Scale tới bao nhiêu videos/second?**  
 A: Có thể handle 1-100 videos/second. Tùy tài nguyên server.

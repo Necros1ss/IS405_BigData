@@ -10,6 +10,7 @@ pyspark>=3.3.0
 
 # Data Source
 kagglehub>=0.1.0
+kafka-python>=2.0.2
 
 # Visualization & Analysis
 matplotlib>=3.5.0

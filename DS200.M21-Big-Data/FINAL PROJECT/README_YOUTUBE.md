@@ -5,7 +5,7 @@ This is a Big Data project that uses machine learning and Apache Spark to predic
 
 **Original Project:** Flight Delays Prediction (converted to YouTube Trending prediction)  
 **Dataset:** [Trending YouTube Videos 113 Countries](https://www.kaggle.com/datasets/asaniczka/trending-youtube-videos-113-countries)  
-**Technology Stack:** Python, PySpark (ML), Hadoop HDFS, Apache Spark, KaggleHub
+**Technology Stack:** Python, PySpark (batch + Structured Streaming), Kafka, Hadoop HDFS, Apache Spark, KaggleHub
 
 ## Project Structure
 ```
@@ -13,10 +13,13 @@ FINAL PROJECT/
 ├── Predict YouTube Trending.ipynb      # Main Jupyter notebook with PySpark models
 ├── Preprocessing Data.ipynb             # Data preprocessing notebook
 ├── app/
-│   └── app.py                          # Command-line prediction application
-├── README.md                           # This file
-├── run_demo.py                         # Quick demo/test script
-└── data_final/                         # Output data directory
+│   ├── app_spark.py                    # Batch training / evaluation pipeline
+│   ├── streaming_spark.py             # Kafka + Spark Structured Streaming inference
+│   ├── producer_youtube.py            # Synthetic Kafka producer
+│   └── consumer_predictions.py        # Kafka predictions consumer
+├── STREAMING_GUIDE.md                  # Streaming setup and run instructions
+├── STREAMING_QUICK_START.md            # Quick reference
+└── requirements.txt                    # Python dependencies
 ```
 
 ## Features
@@ -26,26 +29,27 @@ FINAL PROJECT/
 - **description_length**: Length of video description
 - **like_ratio**: Ratio of likes to views
 - **comment_ratio**: Ratio of comments to views
-- **engagement**: Total of likes + comments
+- **engagement**: Total of likes + comments, used for label generation in batch training only
 
 ### Target Variable:
 - **LABEL (Trending)**: 
-  - 1 = Video has above-median view count (Trending)
-  - 0 = Video has below-median view count (Not Trending)
+  - 1 = Video has above-median engagement (Trending)
+  - 0 = Video has below-median engagement (Not Trending)
 
 ## Machine Learning Models
 
-The project trains and compares 4 classification models:
+The current codebase trains a **Random Forest** Spark ML pipeline for batch modeling, then uses the saved model in a streaming inference job.
 
-1. **Logistic Regression** - Fast baseline model
-2. **Decision Tree** - Interpretable model
-3. **Random Forest** - Ensemble model with good accuracy
-4. **Naive Bayes** - Probabilistic model
+Batch training uses:
+- RandomForestClassifier
+- BinaryClassificationEvaluator with AUC
+- Feature importance extraction
 
-Each model is evaluated using:
-- Accuracy
-- F1 Score
-- Classification Report
+Streaming inference uses:
+- Kafka source topic for incoming video events
+- Spark Structured Streaming for parsing and feature engineering
+- PipelineModel loading for realtime predictions
+- Kafka sink or console output
 
 ## Installation
 
@@ -56,7 +60,7 @@ Each model is evaluated using:
 
 ### Install Dependencies
 ```bash
-pip install -q kagglehub pyspark pandas numpy scikit-learn matplotlib seaborn
+pip install -r requirements.txt
 ```
 
 ## Usage
@@ -75,9 +79,15 @@ This downloads the actual YouTube dataset using KaggleHub and trains models usin
 
 ### Option 3: Run the Application
 ```bash
-python3 app/app.py
+python3 -m app.app_spark --data <path-to-csv> --no-sample --save-model /tmp/rf_model
 ```
-This launches the prediction application with sample data.
+This runs the batch Spark pipeline, trains the model, and can save it for realtime inference.
+
+### Option 4: Run Realtime Streaming
+```bash
+python3 -m app.streaming_spark --model-path /tmp/rf_model --output console
+```
+This reads events from Kafka, engineers features, and emits predictions in realtime micro-batches.
 
 ## Workflow
 
@@ -97,35 +107,18 @@ path = kagglehub.dataset_download("asaniczka/trending-youtube-videos-113-countri
 Using MinMaxScaler to normalize features for ML models
 
 ### 4. Model Training
-- Split data: 70% train, 30% test
-- Train 4 different classification models
-- Evaluate and compare performance
+- Split data into train/test sets
+- Train a Random Forest Spark ML model
+- Evaluate using AUC and feature importances
 
-### 5. Predictions
-Make trending predictions on new videos based on their features
+### 5. Streaming Predictions
+- Producer sends video events to Kafka
+- Spark Structured Streaming parses and engineers features
+- Loaded model predicts trending in realtime
 
-## Results (From Demo)
+## Results
 
-```
-Model Comparison:
-Model                  Accuracy   F1 Score
-─────────────────────────────────────────
-Logistic Regression    0.8200     0.7900
-Decision Tree          0.7500     0.7100
-Random Forest          0.8800     0.8600  ← Best Model
-Naive Bayes            0.7800     0.7400
-```
-
-## Feature Importance (from Random Forest)
-```
-Feature              Importance
-────────────────────────────────
-engagement           31.8%      (likes + comments)
-description_length   20.4%      (description character count)
-like_ratio          19.6%       (likes / views)
-comment_ratio       17.4%       (comments / views)
-tag_count           10.9%       (number of tags)
-```
+The batch pipeline reports AUC and feature importances from the Random Forest model. The streaming job prints realtime predictions with `trending`, `prob_not_trending`, and `prob_trending`.
 
 ## Example Prediction
 ```
@@ -134,7 +127,6 @@ Input:
   - description_length: 800
   - like_ratio: 0.10
   - comment_ratio: 0.06
-  - engagement: 25000
 
 Output:
   Result: TRENDING
@@ -142,11 +134,9 @@ Output:
 ```
 
 ## PySpark Configuration
-```python
-spark = SparkSession.builder \
-    .appName('YouTubeTrending') \
-    .config("spark.executor.memory", "16g") \
-    .getOrCreate()
+For realtime streaming, set the Kafka connector package before starting Spark:
+```bash
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
 ```
 
 ## Data Processing Pipeline
@@ -155,20 +145,21 @@ spark = SparkSession.builder \
 2. **DataFrame Operations** → Select relevant columns, remove nulls
 3. **Feature Engineering** → Create ratios and engagement metrics
 4. **Vector Assembly** → Combine features into ML vectors
-5. **Feature Scaling** → MinMaxScaler normalization
-6. **Model Training** → RandomForest, LogisticRegression, etc.
-7. **Evaluation** → Accuracy, F1-Score, Classification Report
-8. **Predictions** → Output trending probability for new videos
+5. **Model Training** → RandomForest on Spark ML
+6. **Evaluation** → AUC and feature importances
+7. **Kafka Producer** → Send events to `youtube_videos`
+8. **Spark Structured Streaming** → Parse, engineer, and predict in realtime
+9. **Kafka/Console Sink** → Emit prediction events
 
 ## Key Differences from Original Project
 
-| Aspect | Original (Flight Delays) | Updated (YouTube Trending) |
+| Aspect | Original (Flight Delays) | Current (YouTube Trending) |
 |--------|--------------------------|---------------------------|
 | Target | Predict departure delay | Predict if video will trend |
 | Features | Flight info (time, distance, etc) | Video metrics (likes, comments, tags) |
 | Dataset | Flight records | YouTube videos metadata |
-| Data Source | CSV files | KaggleHub dataset |
-| Models | Classification (3 delay classes) | Binary classification |
+| Data Source | CSV files | CSV batch + Kafka stream |
+| Models | Classification (3 delay classes) | Binary classification with Spark ML |
 
 ## Files Description
 
@@ -185,19 +176,19 @@ spark = SparkSession.builder \
   - Data quality checks
 
 ### Application Files
-- **app/app_spark.py** - Spark ML pipeline (primary application)
-- **scripts/run_spark.sh** - Environment setup & execution wrapper
-- **app/scripts/orchestrate_full_pipeline.sh** - Full HDFS + Spark orchestration
+- **app/app_spark.py** - Batch Spark ML training and export pipeline
+- **app/streaming_spark.py** - Realtime Kafka → Spark → prediction pipeline
+- **app/producer_youtube.py** - Synthetic Kafka event producer for demo
+- **app/consumer_predictions.py** - Realtime Kafka consumer for output
 - **Predict YouTube Trending.ipynb** - Complete Jupyter analysis
 
 ## Performance Metrics
 
 The optimized Spark ML pipeline (RandomForest) achieves:
-- **Accuracy**: ~88%
-- **F1-Score**: ~86%
-- **Training Time**: ~30 seconds (on single node)
-- **Prediction Time**: <1 second per 1K videos
-- **Scalability**: Horizontal via HDFS + Hadoop YARN
+- **AUC**: reported by batch evaluation
+- **Training Time**: depends on dataset size and cluster resources
+- **Prediction Time**: micro-batch streaming latency
+- **Scalability**: Horizontal via Spark + Kafka + HDFS
 
 ## Troubleshooting
 
@@ -210,6 +201,9 @@ The optimized Spark ML pipeline (RandomForest) achieves:
 ### Issue: Missing dependencies
 **Solution:** Run `pip install -r requirements.txt`
 
+### Issue: Kafka connector not found
+**Solution:** Set `SPARK_KAFKA_PACKAGES=org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1` before starting streaming
+
 ## Future Improvements
 
 1. Add more features (upload time, channel age, previous videos)
@@ -218,6 +212,7 @@ The optimized Spark ML pipeline (RandomForest) achieves:
 4. Add geographic trending analysis
 5. Implement A/B testing for model improvements
 6. Deploy to cloud (AWS, GCP)
+7. Replace synthetic Kafka producer with a real ingest source
 
 ## References
 

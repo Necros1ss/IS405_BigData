@@ -6,6 +6,7 @@ Usage:
   python3 -m app.streaming_spark --kafka-servers localhost:9092 --input-topic youtube_videos --output-topic predictions
 """
 import argparse
+import os
 from typing import Optional
 
 
@@ -53,9 +54,11 @@ class KafkaStreamingPipeline:
         """Build Spark session with Kafka support."""
         try:
             from pyspark.sql import SparkSession
-            self.spark = SparkSession.builder \
-                .appName(app_name) \
-                .getOrCreate()
+            builder = SparkSession.builder.appName(app_name)
+            kafka_packages = os.environ.get("SPARK_KAFKA_PACKAGES")
+            if kafka_packages:
+                builder = builder.config("spark.jars.packages", kafka_packages)
+            self.spark = builder.getOrCreate()
             print(f"✓ Spark session created: {app_name}")
         except ImportError:
             print("⚠ PySpark not available. Install: pip install pyspark")
@@ -101,6 +104,7 @@ class KafkaStreamingPipeline:
                 .option("kafka.bootstrap.servers", self.kafka_servers) \
                 .option("subscribe", self.input_topic) \
                 .option("startingOffsets", "latest") \
+                .option("failOnDataLoss", "false") \
                 .load()
             
             print(f"✓ Kafka stream created: {self.input_topic}")
@@ -127,9 +131,9 @@ class KafkaStreamingPipeline:
             from pyspark.sql import functions as F
             from pyspark.sql.types import StructType, StructField, DoubleType, IntegerType, StringType
             
-            # Try schema for raw video data first
             raw_schema = StructType([
                 StructField("video_id", StringType(), True),
+                StructField("event_time", StringType(), True),
                 StructField("title", StringType(), True),
                 StructField("view_count", IntegerType(), True),
                 StructField("like_count", IntegerType(), True),
@@ -137,28 +141,44 @@ class KafkaStreamingPipeline:
                 StructField("video_tags", StringType(), True),
                 StructField("description", StringType(), True),
             ])
+
+            engineered_schema = StructType([
+                StructField("video_id", StringType(), True),
+                StructField("event_time", StringType(), True),
+                StructField("title", StringType(), True),
+                StructField("tag_count", IntegerType(), True),
+                StructField("description_length", IntegerType(), True),
+                StructField("like_ratio", DoubleType(), True),
+                StructField("comment_ratio", DoubleType(), True),
+                StructField("engagement", DoubleType(), True),
+            ])
             
-            # Parse JSON from Kafka value
-            df_parsed = df.select(F.from_json(F.col("value").cast("string"), raw_schema).alias("data"))
-            df_parsed = df_parsed.select("data.*")
-            
-            # Apply feature engineering (if raw data)
-            if "tag_count" not in df_parsed.columns:
-                # Engineer features from raw data
-                df_parsed = df_parsed \
-                    .withColumn("likes", F.col("like_count")) \
-                    .withColumn("tags", F.col("video_tags")) \
-                    .withColumn("tag_count", F.size(F.split(F.col("tags"), "\\|"))) \
-                    .withColumn("description_length", F.length(F.col("description"))) \
-                    .withColumn("like_ratio", F.when(F.col("view_count") > 0, 
-                        F.col("likes") / F.col("view_count")).otherwise(0.0)) \
-                    .withColumn("comment_ratio", F.when(F.col("likes") > 0,
-                        F.col("comment_count") / F.col("likes")).otherwise(0.0)) \
-                    .withColumn("engagement", F.col("likes") + F.col("comment_count"))
-                
-                # Select feature columns only
-                df_parsed = df_parsed.select("video_id", "title", "tag_count", 
-                    "description_length", "like_ratio", "comment_ratio", "engagement")
+            parsed = df.select(
+                F.from_json(F.col("value").cast("string"), raw_schema).alias("raw"),
+                F.from_json(F.col("value").cast("string"), engineered_schema).alias("engineered")
+            )
+
+            df_parsed = parsed.select(
+                F.coalesce(F.col("raw.video_id"), F.col("engineered.video_id")).alias("video_id"),
+                F.coalesce(F.col("raw.event_time"), F.col("engineered.event_time")).alias("event_time"),
+                F.coalesce(F.col("raw.title"), F.col("engineered.title")).alias("title"),
+                F.coalesce(F.col("engineered.tag_count"), F.when(F.col("raw.video_tags").isNotNull(), F.size(F.split(F.col("raw.video_tags"), "\\|")))).alias("tag_count"),
+                F.coalesce(F.col("engineered.description_length"), F.when(F.col("raw.description").isNotNull(), F.length(F.col("raw.description")))).alias("description_length"),
+                F.coalesce(F.col("engineered.like_ratio"), F.when(F.col("raw.view_count") > 0, F.col("raw.like_count") / F.col("raw.view_count")).otherwise(F.lit(0.0))).alias("like_ratio"),
+                F.coalesce(F.col("engineered.comment_ratio"), F.when(F.col("raw.view_count") > 0, F.col("raw.comment_count") / F.col("raw.view_count")).otherwise(F.lit(0.0))).alias("comment_ratio"),
+                F.coalesce(F.col("engineered.engagement"), (F.col("raw.like_count") + F.col("raw.comment_count")).cast(DoubleType())).alias("engagement")
+            )
+
+            df_parsed = df_parsed.select(
+                "video_id",
+                "event_time",
+                "title",
+                "tag_count",
+                "description_length",
+                "like_ratio",
+                "comment_ratio",
+                "engagement"
+            )
             
             print("✓ Stream processing configured")
             return df_parsed
@@ -176,13 +196,16 @@ class KafkaStreamingPipeline:
         Returns:
             DataFrame with predictions (video_id, title, prediction, probability)
         """
+        from pyspark.sql import functions as F
+
         if not self.model:
-            print("✗ Model not loaded. Cannot make predictions.")
-            return df
+            print("⚠ Model not loaded. Stream will pass through engineered features without predictions.")
+            return df \
+                .withColumn("trending", F.lit(None).cast("integer")) \
+                .withColumn("prob_not_trending", F.lit(None).cast("double")) \
+                .withColumn("prob_trending", F.lit(None).cast("double"))
 
         try:
-            from pyspark.sql import functions as F
-            
             # Apply model
             predictions = self.model.transform(df)
             
@@ -191,7 +214,7 @@ class KafkaStreamingPipeline:
                 .withColumn("trending", F.col("prediction").cast("integer")) \
                 .withColumn("prob_not_trending", F.round(F.col("probability")[0], 4)) \
                 .withColumn("prob_trending", F.round(F.col("probability")[1], 4)) \
-                .select("video_id", "title", "engagement", "trending", 
+                .select("video_id", "event_time", "title", "engagement", "trending", 
                     "prob_not_trending", "prob_trending")
             
             print("✓ Predictions applied to stream")

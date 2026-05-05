@@ -15,7 +15,8 @@ def train_spark_model(df_features, sample_fraction=0.01, no_sample=False, num_tr
     print(f"Median engagement (approx): {median_val}")
     df_labeled = df_features.withColumn("label", F.when(F.col("engagement") > F.lit(median_val), 1).otherwise(0))
 
-    feature_cols = ['tag_count', 'description_length', 'like_ratio', 'comment_ratio', 'engagement']
+    # Keep engagement out of the feature vector to reduce label leakage.
+    feature_cols = ['tag_count', 'description_length', 'like_ratio', 'comment_ratio']
     assembler = VectorAssembler(inputCols=feature_cols, outputCol="features")
 
     # Split and train

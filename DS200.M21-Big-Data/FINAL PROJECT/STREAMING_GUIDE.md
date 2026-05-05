@@ -60,7 +60,7 @@ services:
 
 ### 2. Cài Python dependencies
 ```bash
-pip3 install kafka-python==2.0.2
+pip3 install -r requirements.txt
 ```
 
 ### 3. Train model trước (nếu muốn predictions)
@@ -69,6 +69,7 @@ cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export SPARK_HOME=/home/thinh/spark
 export PYTHONPATH="$PWD:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip"
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
 
 python3 -m app.app_spark --data app/data_final/youtube_large_sample.csv \
   --no-sample --save-model /tmp/rf_model

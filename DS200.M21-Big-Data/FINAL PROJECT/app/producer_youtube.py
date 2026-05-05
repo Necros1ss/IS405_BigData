@@ -27,6 +27,7 @@ def create_synthetic_video():
     
     return {
         "video_id": video_id,
+        "event_time": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "title": random.choice(titles) + f" #{random.randint(1, 1000)}",
         "view_count": random.randint(100, 1000000),
         "like_count": random.randint(10, 100000),
