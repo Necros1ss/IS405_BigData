@@ -11,8 +11,11 @@ export PYTHONPATH="$PROJECT_ROOT:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspa
 
 cd "$PROJECT_ROOT"
 
-# Activate virtualenv if present
-if [ -f .venv_spark/bin/activate ]; then
+# Activate a project virtualenv if present
+if [ -f .venv/bin/activate ]; then
+  # shellcheck source=/dev/null
+  source .venv/bin/activate
+elif [ -f .venv_spark/bin/activate ]; then
   # shellcheck source=/dev/null
   source .venv_spark/bin/activate
 fi

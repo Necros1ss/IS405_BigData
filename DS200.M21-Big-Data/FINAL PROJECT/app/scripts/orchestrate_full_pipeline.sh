@@ -13,6 +13,9 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SETUP_SCRIPT="$PROJECT_ROOT/app/scripts/setup_hadoop_single_node.sh"
 HADOOP_INSTALL="/opt/hadoop"
+HADOOP_HOME="$HADOOP_INSTALL"
+export HADOOP_HOME
+export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <local-csv-path> [--hdfs-user thinh] [--num-trees 100] [--max-depth 12]"
@@ -52,10 +55,10 @@ fi
 
 echo "Starting HDFS/YARN if not running..."
 if ! jps | grep -q NameNode; then
-  ${HADOOP_INSTALL}/sbin/start-dfs.sh || true
+  ${HADOOP_HOME}/sbin/start-dfs.sh || true
 fi
 if ! jps | grep -q ResourceManager; then
-  ${HADOOP_INSTALL}/sbin/start-yarn.sh || true
+  ${HADOOP_HOME}/sbin/start-yarn.sh || true
 fi
 
 HDFS_INPUT_DIR="/user/${HDFS_USER}/input"
@@ -63,8 +66,10 @@ HDFS_MODEL_DIR="/user/${HDFS_USER}/models/rf"
 HDFS_PRED_DIR="/user/${HDFS_USER}/predictions/rf"
 
 echo "Putting local CSV into HDFS..."
-hdfs dfs -mkdir -p "${HDFS_INPUT_DIR}"
-hdfs dfs -put -f "${LOCAL_CSV}" "${HDFS_INPUT_DIR}/"
+sudo -u hadoop ${HADOOP_HOME}/bin/hdfs dfs -mkdir -p "/user/${HDFS_USER}"
+sudo -u hadoop ${HADOOP_HOME}/bin/hdfs dfs -chown "${HDFS_USER}:supergroup" "/user/${HDFS_USER}"
+sudo -u "${HDFS_USER}" ${HADOOP_HOME}/bin/hdfs dfs -mkdir -p "${HDFS_INPUT_DIR}"
+sudo -u "${HDFS_USER}" ${HADOOP_HOME}/bin/hdfs dfs -put -f "${LOCAL_CSV}" "${HDFS_INPUT_DIR}/"
 
 HDFS_CSV_PATH="hdfs://localhost:9000${HDFS_INPUT_DIR}/*.csv"
 
