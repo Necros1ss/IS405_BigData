@@ -6,9 +6,10 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export PATH=$JAVA_HOME/bin:$PATH
 export SPARK_HOME=/home/thinh/spark
 export SPARK_LOCAL_HOSTNAME=localhost
-export PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="$PROJECT_ROOT:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
 
-cd "$(dirname "$0")/.."
+cd "$PROJECT_ROOT"
 
 # Activate virtualenv if present
 if [ -f .venv_spark/bin/activate ]; then
@@ -39,7 +40,7 @@ if [ -z "$SPARK_HOME" ] && [ -d "/home/thinh/spark" ]; then
 fi
 export SPARK_LOCAL_HOSTNAME=${SPARK_LOCAL_HOSTNAME:-localhost}
 if [ -d "$SPARK_HOME" ]; then
-  export PYTHONPATH="$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
+  export PYTHONPATH="$PROJECT_ROOT:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
 fi
 
-python3 app/app_spark.py --data "$DATA_PATH" "$@"
+python3 -m app.app_spark --data "$DATA_PATH" "$@"
