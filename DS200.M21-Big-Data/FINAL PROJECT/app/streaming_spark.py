@@ -197,6 +197,7 @@ class KafkaStreamingPipeline:
             DataFrame with predictions (video_id, title, prediction, probability)
         """
         from pyspark.sql import functions as F
+        from pyspark.ml.functions import vector_to_array
 
         if not self.model:
             print("⚠ Model not loaded. Stream will pass through engineered features without predictions.")
@@ -212,8 +213,9 @@ class KafkaStreamingPipeline:
             # Extract prediction and probability
             predictions = predictions \
                 .withColumn("trending", F.col("prediction").cast("integer")) \
-                .withColumn("prob_not_trending", F.round(F.col("probability")[0], 4)) \
-                .withColumn("prob_trending", F.round(F.col("probability")[1], 4)) \
+                .withColumn("probability_array", vector_to_array(F.col("probability"))) \
+                .withColumn("prob_not_trending", F.round(F.col("probability_array")[0], 4)) \
+                .withColumn("prob_trending", F.round(F.col("probability_array")[1], 4)) \
                 .select("video_id", "event_time", "title", "engagement", "trending", 
                     "prob_not_trending", "prob_trending")
             

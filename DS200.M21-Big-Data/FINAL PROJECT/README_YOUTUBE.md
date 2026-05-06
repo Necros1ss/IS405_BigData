@@ -136,8 +136,77 @@ Output:
 ## PySpark Configuration
 For realtime streaming, set the Kafka connector package before starting Spark:
 ```bash
-export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
 ```
+
+## Streaming Run Checklist
+
+Use this checklist when running the realtime pipeline end-to-end on Linux:
+
+1. Start ZooKeeper.
+```bash
+cd ~/kafka
+bin/zookeeper-server-start.sh config/zookeeper.properties
+```
+
+2. Start the Kafka broker.
+```bash
+cd ~/kafka
+bin/kafka-server-start.sh config/server.properties
+```
+
+3. Create the Kafka topics.
+```bash
+cd ~/kafka
+bin/kafka-topics.sh --create --bootstrap-server localhost:9092 \
+  --topic youtube_videos --partitions 1 --replication-factor 1
+bin/kafka-topics.sh --create --bootstrap-server localhost:9092 \
+  --topic youtube_predictions --partitions 1 --replication-factor 1
+```
+
+4. Make sure the batch model exists.
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export SPARK_HOME=/home/thinh/spark
+export PYTHONPATH="$PWD:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
+
+python3 -m app.app_spark --data app/data_final/youtube_large_sample.csv \
+  --no-sample --save-model /tmp/rf_model
+```
+
+5. Start the streaming job.
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export SPARK_HOME=/home/thinh/spark
+export SPARK_LOCAL_HOSTNAME=localhost
+export PYTHONPATH="$PWD:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
+export SPARK_KAFKA_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
+
+python3 -m app.streaming_spark --kafka-servers localhost:9092 \
+  --input-topic youtube_videos \
+  --output-topic youtube_predictions \
+  --model-path /tmp/rf_model \
+  --output kafka
+```
+
+6. Start the consumer.
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+python3 -m app.consumer_predictions --kafka-servers localhost:9092 --topic youtube_predictions
+```
+
+7. Start the producer after the streaming job is already listening.
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --rate 1 --num-messages 5
+```
+
+8. Confirm the consumer prints `TRENDING` or `NOT TRENDING` lines.
+
+9. Stop the terminals in reverse order when you finish.
 
 ## Data Processing Pipeline
 
@@ -202,7 +271,7 @@ The optimized Spark ML pipeline (RandomForest) achieves:
 **Solution:** Run `pip install -r requirements.txt`
 
 ### Issue: Kafka connector not found
-**Solution:** Set `SPARK_KAFKA_PACKAGES=org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1` before starting streaming
+**Solution:** Set `SPARK_KAFKA_PACKAGES=org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1` before starting streaming
 
 ## Future Improvements
 
