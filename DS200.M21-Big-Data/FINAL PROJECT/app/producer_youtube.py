@@ -53,18 +53,20 @@ def create_synthetic_video(profile: str | None = None):
     return {
         "video_id": video_id,
         "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "publish_date": publish_date.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        # Match batch schema: use `publish_time` (timestamp string) and `tags`
+        "publish_time": publish_date.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "language": language,
         "title": title,
         "views": float(views),
         "likes": float(likes),
         "dislikes": float(dislikes),
         "comment_count": float(comment_count),
-        "video_tags": video_tags,
+        "tags": video_tags,
         "description": description,
         "comments_disabled": 0,
         "ratings_disabled": 0,
-        "video_error_or_removed": 0
+        "video_error_or_removed": 0,
+        "country": "US"
     }
 
 def fetch_youtube_video_ids(api_key, query, region_code="US", max_results=10):
@@ -92,18 +94,20 @@ def fetch_youtube_video_details(api_key, video_ids):
         results.append({
             "video_id": item.get("id", ""),
             "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "publish_date": snippet.get("publishedAt", ""),
+            # Match batch schema names
+            "publish_time": snippet.get("publishedAt", ""),
             "language": snippet.get("defaultAudioLanguage", snippet.get("defaultLanguage", "en")),
             "title": snippet.get("title", ""),
             "views": float(stats.get("viewCount", 0) or 0),
             "likes": float(stats.get("likeCount", 0) or 0),
             "dislikes": float(stats.get("dislikeCount", 0) or 0),
             "comment_count": float(stats.get("commentCount", 0) or 0),
-            "video_tags": "|".join(tags if isinstance(tags, list) else []),
+            "tags": "|".join(tags if isinstance(tags, list) else []),
             "description": snippet.get("description", ""),
             "comments_disabled": 0,
             "ratings_disabled": 0,
-            "video_error_or_removed": 0
+            "video_error_or_removed": 0,
+            "country": "US"
         })
     return results
 

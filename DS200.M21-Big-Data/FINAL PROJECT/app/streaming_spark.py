@@ -6,7 +6,6 @@ import logging
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-# IMPORT SHARED MODULES ĐỂ CHỐNG TRAINING-SERVING SKEW
 from app.clean_spark_v2_fixed import get_shared_schema, apply_shared_feature_engineering
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,13 +17,14 @@ class KafkaStreamingPipeline:
         self.input_topic = input_topic
         self.output_topic = output_topic
         self.model_path = model_path
-        self.checkpoint_dir = checkpoint_dir # Nên trỏ tới HDFS trong Production
+        self.checkpoint_dir = checkpoint_dir
         self.spark = None
         self.model = None
 
     def build_spark_session(self):
         from pyspark.sql import SparkSession
         self.spark = SparkSession.builder.appName("YouTubeStreaming_Prod") \
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
             .config("spark.sql.streaming.metricsEnabled", "false") \
             .config("spark.sql.shuffle.partitions", "10") \
             .getOrCreate()
@@ -42,27 +42,27 @@ class KafkaStreamingPipeline:
 
     def process_stream(self, df):
         from pyspark.sql import functions as F
-        
-        # 1. VALIDATION: Dùng schema chia sẻ
         raw_schema = get_shared_schema()
         
-        # Bắt lỗi JSON (Data hỏng sẽ thành null, thực tế nên bắn ra DLQ)
         parsed = df.select(F.from_json(F.col("value").cast("string"), raw_schema).alias("data")).select("data.*")
 
-        # 2. FEATURE ENGINEERING: Tái sử dụng 100% logic của Batch
+        # STREAMING FIX: Gán parsed_trending_date bằng thời điểm xử lý real-time hiện tại
+        # để hàm apply_shared_feature_engineering có thể tính toán được hours_to_trending
+        parsed = parsed.withColumn("parsed_trending_date", F.current_timestamp())
+
+        # Áp dụng chung logic từ file batch
         df_features = apply_shared_feature_engineering(parsed)
 
         return df_features.select(
-            "video_id", "title", "views",
+            "video_id", "title", "views", "country",
             "log_views", "log_likes", "log_comment_count", "like_ratio", "comment_ratio",
-            "title_length", "tag_count", "publish_hour", "publish_dow"
+            "title_length", "tag_count", "publish_hour", "publish_dow",
+            "log_hours_to_trending" # Output đầy đủ
         )
 
     def make_predictions(self, df):
         from pyspark.sql import functions as F
         predictions = self.model.transform(df)
-        
-        # Đảo ngược Log ngay lập tức
         predictions = predictions \
             .withColumn("predicted_trending_days", F.round(F.expr("expm1(prediction)"), 2)) \
             .select("video_id", "title", "views", "predicted_trending_days")
@@ -97,7 +97,6 @@ if __name__ == "__main__":
     parser.add_argument("--input-topic", default="youtube_videos")
     parser.add_argument("--output-topic", default="youtube_predictions")
     parser.add_argument("--model-path", default="models/rf_regression_model")
-    # TỐI ƯU: Đặt Checkpoint lên HDFS hoặc một Volume bền vững
     parser.add_argument("--checkpoint-dir", default="hdfs://localhost:9000/user/thinh/spark_chkpt")
     args = parser.parse_args()
     

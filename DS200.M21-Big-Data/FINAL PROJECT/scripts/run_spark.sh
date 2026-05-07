@@ -18,7 +18,7 @@ if [ -f .venv_spark/bin/activate ]; then
 fi
 
 # First positional argument is the data path (optional); remaining args are passed through
-DATA_PATH="${1:-kaggle_youtube/trending_yt_videos_113_countries.csv}"
+DATA_PATH="${1:-data/*videos.csv}"
 if [ "$#" -ge 1 ]; then
   # shift only if a positional was provided so $@ contains only flags
   shift

@@ -37,7 +37,7 @@ Key components (in `FINAL PROJECT`):
 
 ## Dataset
 
-The training dataset used for experiments is placed under `FINAL PROJECT/kaggle_youtube/` (csv of trending videos across countries). The training script aggregates and prepares features before training.
+The training dataset used for experiments is placed under `FINAL PROJECT/data/` (CSV files like `USvideos.csv`, `GBvideos.csv`, ...). The training script aggregates and prepares features before training.
 
 ## Quickstart — copy/paste to run end-to-end
 

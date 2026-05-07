@@ -10,14 +10,14 @@ This workflow mimics real-world Big Data architecture: Windows → HDFS → Spar
 ```powershell
 # Download raw CSV from Kaggle (no cleaning needed)
 # Then upload to VM:
-pwsh .\app\scripts\scp_upload_raw.ps1 -LocalCsv "C:\Users\Admin\.cache\kagglehub\...\trending_yt_videos_113_countries.csv" -VmUser thinh -VmHost 10.0.2.15
+pwsh .\app\scripts\scp_upload_raw.ps1 -LocalCsv "C:\path\to\USvideos.csv" -VmUser thinh -VmHost 10.0.2.15
 ```
 
 **On VM (Lubuntu):**
 ```bash
 cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
 # Full orchestration: cài Hadoop (nếu cần) → put CSV → chạy Spark
-sudo bash app/scripts/orchestrate_full_pipeline.sh /home/thinh/data/trending_yt_videos_113_countries.csv --hdfs-user thinh --num-trees 100 --max-depth 12
+sudo bash app/scripts/orchestrate_full_pipeline.sh "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT/data/USvideos.csv" --hdfs-user thinh --num-trees 100 --max-depth 12
 ```
 
 **Outputs saved to:**
@@ -38,13 +38,13 @@ export PYTHONPATH=/home/thinh/spark/python:/home/thinh/spark/python/lib/pyspark.
 
 cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
 source .venv_spark/bin/activate
-python3 app/app_spark.py --data "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT/kaggle_youtube/trending_yt_videos_113_countries.csv"
+python3 app/app_spark.py --data "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT/data/*videos.csv"
 ```
 
 Notes:
 - Uses the local Spark install at `/home/thinh/spark` instead of pip `pyspark`.
 - Uses Java 17. Java 25 EA caused Spark errors on this machine.
-- The full Kaggle CSV is already downloaded into `kaggle_youtube/`.
+- The default local dataset pattern is `data/*videos.csv`.
 - The training step is intentionally sampled so the job can finish on this VM.
 
 ### Running heavier / full training
@@ -52,16 +52,16 @@ If you have enough resources and want to train with larger settings (or on full 
 
 ```bash
 # sample fraction controls fraction after train/test split; set --no-sample to train on full split
-python3 app/app_spark.py --data "kaggle_youtube/trending_yt_videos_113_countries.csv" --sample-fraction 0.1 --num-trees 50 --max-depth 10
+python3 app/app_spark.py --data "data/*videos.csv" --sample-fraction 0.1 --num-trees 50 --max-depth 10
 
 # or to train on the full split (be careful: expensive)
-python3 app/app_spark.py --data "kaggle_youtube/trending_yt_videos_113_countries.csv" --no-sample --num-trees 100 --max-depth 12
+python3 app/app_spark.py --data "data/*videos.csv" --no-sample --num-trees 100 --max-depth 12
 ```
 
 Use `scripts/run_spark.sh` to wrap environment exports:
 
 ```bash
-bash scripts/run_spark.sh "kaggle_youtube/trending_yt_videos_113_countries.csv" --no-sample --num-trees 100 --max-depth 12
+bash scripts/run_spark.sh "data/*videos.csv" --no-sample --num-trees 100 --max-depth 12
 ```
 
 ### Option 2: Full Jupyter Pipeline (Advanced)
