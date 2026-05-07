@@ -33,7 +33,7 @@ def load_env_file(env_path: str = ".env"):
             if key and key not in os.environ:
                 os.environ[key] = value
 
-def create_synthetic_video():
+def create_synthetic_video(profile: str | None = None):
     """Generate a synthetic YouTube video record."""
     video_id = f"vid_{random.randint(100000, 999999)}"
     
@@ -46,15 +46,36 @@ def create_synthetic_video():
     tags = ["trending", "viral", "music", "educational", "entertainment", "gaming", 
             "comedy", "news", "sports", "tech", "tutorial", "food", "travel", "diy"]
     
+    if profile == "non_trending":
+        title = random.choice(titles[:5]) + f" #{random.randint(1, 1000)}"
+        description = ""
+        video_tags = ""
+        publish_date = datetime.now(timezone.utc).replace(hour=random.randint(0, 5), minute=0, second=0, microsecond=0)
+        view_count = random.randint(100, 50000)
+        like_count = random.randint(10, 2000)
+        comment_count = random.randint(5, 500)
+        language = random.choice(["Vietnamese", "Spanish", "Portuguese", "Japanese", "Korean"])
+    else:
+        title = random.choice(titles) + f" #{random.randint(1, 1000)}"
+        description = f"Check out this awesome video! {random.choice(['Subscribe for more!', 'Like and comment!', 'Turn on notifications!'])}"
+        video_tags = "|".join(random.sample(tags, random.randint(2, 6)))
+        publish_date = datetime.now(timezone.utc)
+        view_count = random.randint(100, 1000000)
+        like_count = random.randint(10, 100000)
+        comment_count = random.randint(5, 50000)
+        language = "English"
+
     return {
         "video_id": video_id,
         "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "title": random.choice(titles) + f" #{random.randint(1, 1000)}",
-        "view_count": random.randint(100, 1000000),
-        "like_count": random.randint(10, 100000),
-        "comment_count": random.randint(5, 50000),
-        "video_tags": "|".join(random.sample(tags, random.randint(2, 6))),
-        "description": f"Check out this awesome video! {random.choice(['Subscribe for more!', 'Like and comment!', 'Turn on notifications!'])}"
+        "publish_date": publish_date.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "language": language,
+        "title": title,
+        "view_count": view_count,
+        "like_count": like_count,
+        "comment_count": comment_count,
+        "video_tags": video_tags,
+        "description": description
     }
 
 
@@ -111,6 +132,8 @@ def fetch_youtube_video_details(api_key, video_ids):
         results.append({
             "video_id": item.get("id", ""),
             "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "publish_date": snippet.get("publishedAt", ""),
+            "language": snippet.get("defaultAudioLanguage", snippet.get("defaultLanguage", "en")),
             "title": snippet.get("title", ""),
             "view_count": int(stats.get("viewCount", 0) or 0),
             "like_count": int(stats.get("likeCount", 0) or 0),
@@ -135,6 +158,10 @@ def main():
         help="Polling interval in seconds for YouTube API mode")
     parser.add_argument("--num-messages", type=int, default=None,
         help="Number of messages to send (None = infinite)")
+    parser.add_argument("--burst-size", type=int, default=1,
+        help="Number of messages to send per burst in synthetic mode")
+    parser.add_argument("--non-trending-ratio", type=float, default=0.5,
+        help="Fraction of synthetic messages that should look non-trending")
     parser.add_argument("--query", default="trending",
         help="Search query for YouTube API mode")
     parser.add_argument("--region-code", default="US",
@@ -175,6 +202,8 @@ def main():
     print(f"Topic: {args.topic}")
     if args.source == "synthetic":
         print(f"Rate: {args.rate} videos/second")
+        print(f"Burst size: {args.burst_size} messages per burst")
+        print(f"Non-trending ratio: {args.non_trending_ratio}")
     else:
         print(f"Polling every: {args.poll_interval} seconds")
         print(f"Query: {args.query} | Region: {args.region_code} | Max results: {args.max_results}")
@@ -192,16 +221,28 @@ def main():
                 break
 
             if args.source == "synthetic":
-                video = create_synthetic_video()
+                burst_count = max(1, int(args.burst_size))
+                sent_this_burst = 0
 
-                try:
-                    producer.send(args.topic, value=video)
-                    message_count += 1
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    print(f"[{timestamp}] #{message_count:04d} Published: {video['video_id']} ({video['view_count']:,} views, {video['like_count']:,} likes)")
+                for _ in range(burst_count):
+                    if args.num_messages and message_count >= args.num_messages:
+                        break
+
+                    profile = "non_trending" if random.random() < max(0.0, min(1.0, args.non_trending_ratio)) else None
+                    video = create_synthetic_video(profile=profile)
+
+                    try:
+                        producer.send(args.topic, value=video)
+                        message_count += 1
+                        sent_this_burst += 1
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        print(f"[{timestamp}] #{message_count:04d} Published: {video['video_id']} ({video['view_count']:,} views, {video['like_count']:,} likes)")
+                    except Exception as e:
+                        print(f"✗ Failed to send message: {e}")
+
+                producer.flush()
+                if sent_this_burst > 0:
                     time.sleep(interval)
-                except Exception as e:
-                    print(f"✗ Failed to send message: {e}")
             else:
                 try:
                     ids = fetch_youtube_video_ids(
@@ -224,8 +265,8 @@ def main():
                         timestamp = datetime.now().strftime("%H:%M:%S")
                         print(f"[{timestamp}] #{message_count:04d} Published(API): {video['video_id']} ({video['view_count']:,} views, {video['like_count']:,} likes)")
 
-                        if args.num_messages and message_count >= args.num_messages:
-                            break
+                    if args.num_messages and message_count >= args.num_messages:
+                        break
 
                     if published_in_this_poll == 0:
                         timestamp = datetime.now().strftime("%H:%M:%S")

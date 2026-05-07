@@ -56,8 +56,8 @@ def main():
             # Format output
             timestamp = datetime.now().strftime("%H:%M:%S")
             video_id = prediction.get("video_id", "unknown")
-            title = prediction.get("title", "Unknown")[:40]
-            engagement = prediction.get("engagement", 0)
+            title = prediction.get("title", "Unknown")
+            publish_date = prediction.get("publish_date", "unknown")
             trending = prediction.get("trending", 0)
             prob_trending = prediction.get("prob_trending", 0)
             prob_not_trending = prediction.get("prob_not_trending", 0)
@@ -67,8 +67,8 @@ def main():
             
             print(f"[{timestamp}] #{message_count:04d} {status}")
             print(f"  Video ID: {video_id}")
-            print(f"  Title: {title}...")
-            print(f"  Engagement: {engagement:,}")
+            print(f"  Title: {title}")
+            print(f"  Publish Date: {publish_date}")
             print(f"  Probability: Not Trending {prob_not_trending:.2%} | Trending {prob_trending:.2%}")
             print("-" * 100)
     

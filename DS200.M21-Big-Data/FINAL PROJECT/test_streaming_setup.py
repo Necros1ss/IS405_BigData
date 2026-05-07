@@ -110,9 +110,9 @@ def check_files():
         "app/streaming_spark.py",
         "app/producer_youtube.py",
         "app/consumer_predictions.py",
-        "app/app_spark.py",
-        "app/clean_spark.py",
-        "app/train_spark.py"
+        "app/app_spark_v2_fixed.py",
+        "app/clean_spark_v2_fixed.py",
+        "app/train_spark_v2_fixed.py"
     ]
     
     all_ok = True
