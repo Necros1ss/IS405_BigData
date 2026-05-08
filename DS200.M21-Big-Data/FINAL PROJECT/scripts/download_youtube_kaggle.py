@@ -2,10 +2,11 @@
 """Download the Kaggle YouTube trending dataset with kagglehub.
 
 This script downloads the dataset and copies the relevant files into the
-project's `data/` directory so the regression ETL can read `data/*videos.csv`.
+project's `data/` directory so the regression ETL can read
+`data/*_youtube_trending_data.csv`.
 
 Default dataset:
-    datasnaek/youtube-new
+    rsrishav/youtube-trending-video-dataset
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ def _copy_selected_files(source_dir: Path, target_dir: Path) -> list[Path]:
     copied: list[Path] = []
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    for pattern in ("*videos.csv", "*category*.json"):
+    for pattern in ("*_youtube_trending_data.csv", "*_category_id.json"):
         for source_file in source_dir.glob(pattern):
             destination = target_dir / source_file.name
             shutil.copy2(source_file, destination)
@@ -33,8 +34,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Download Kaggle YouTube dataset via kagglehub")
     parser.add_argument(
         "--dataset",
-        default="datasnaek/youtube-new",
-        help="Kaggle dataset slug (default: datasnaek/youtube-new)",
+        default="rsrishav/youtube-trending-video-dataset",
+        help="Kaggle dataset slug (default: rsrishav/youtube-trending-video-dataset)",
     )
     parser.add_argument(
         "--target-dir",

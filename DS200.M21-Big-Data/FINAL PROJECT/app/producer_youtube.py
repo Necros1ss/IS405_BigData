@@ -53,11 +53,13 @@ def create_synthetic_video(profile: str | None = None):
     return {
         "video_id": video_id,
         "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        # Match batch schema: use `publish_time` (timestamp string) and `tags`
-        "publish_time": publish_date.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "publishedAt": publish_date.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "trending_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "language": language,
         "title": title,
-        "views": float(views),
+        "channelTitle": "Synthetic Channel",
+        "categoryId": "24",
+        "view_count": float(views),
         "likes": float(likes),
         "dislikes": float(dislikes),
         "comment_count": float(comment_count),
@@ -66,7 +68,7 @@ def create_synthetic_video(profile: str | None = None):
         "comments_disabled": 0,
         "ratings_disabled": 0,
         "video_error_or_removed": 0,
-        "country": "US"
+        "country": "US",
     }
 
 def fetch_youtube_video_ids(api_key, query, region_code="US", max_results=10):
@@ -94,11 +96,13 @@ def fetch_youtube_video_details(api_key, video_ids):
         results.append({
             "video_id": item.get("id", ""),
             "event_time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-            # Match batch schema names
-            "publish_time": snippet.get("publishedAt", ""),
+            "publishedAt": snippet.get("publishedAt", ""),
+            "trending_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "language": snippet.get("defaultAudioLanguage", snippet.get("defaultLanguage", "en")),
             "title": snippet.get("title", ""),
-            "views": float(stats.get("viewCount", 0) or 0),
+            "channelTitle": snippet.get("channelTitle", ""),
+            "categoryId": str(snippet.get("categoryId", "")),
+            "view_count": float(stats.get("viewCount", 0) or 0),
             "likes": float(stats.get("likeCount", 0) or 0),
             "dislikes": float(stats.get("dislikeCount", 0) or 0),
             "comment_count": float(stats.get("commentCount", 0) or 0),
@@ -107,7 +111,7 @@ def fetch_youtube_video_details(api_key, video_ids):
             "comments_disabled": 0,
             "ratings_disabled": 0,
             "video_error_or_removed": 0,
-            "country": "US"
+            "country": "US",
         })
     return results
 
@@ -158,7 +162,7 @@ def main():
                     video = create_synthetic_video(profile=profile)
                     producer.send(args.topic, value=video)
                     message_count += 1
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] #{message_count:04d} Published: {video['video_id']} ({video['views']:,.0f} views)")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] #{message_count:04d} Published: {video['video_id']} ({video['view_count']:,.0f} views)")
                 producer.flush()
                 time.sleep(interval)
             else:
@@ -170,7 +174,7 @@ def main():
                         producer.send(args.topic, value=video)
                         sent_video_ids.add(video["video_id"])
                         message_count += 1
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] #{message_count:04d} Published(API): {video['video_id']} ({video['views']:,.0f} views)")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] #{message_count:04d} Published(API): {video['video_id']} ({video['view_count']:,.0f} views)")
                     time.sleep(max(args.poll_interval, 1.0))
                 except Exception as e:
                     print(f"✗ API error: {e}")

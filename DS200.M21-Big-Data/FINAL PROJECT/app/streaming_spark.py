@@ -7,6 +7,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from app.clean_spark_v2_fixed import get_shared_schema, apply_shared_feature_engineering
+from app.clean_spark_v2_fixed import normalize_input_columns, parse_trending_date
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,28 +44,34 @@ class KafkaStreamingPipeline:
     def process_stream(self, df):
         from pyspark.sql import functions as F
         raw_schema = get_shared_schema()
-        
+
         parsed = df.select(F.from_json(F.col("value").cast("string"), raw_schema).alias("data")).select("data.*")
 
-        # STREAMING FIX: Gán parsed_trending_date bằng thời điểm xử lý real-time hiện tại
-        # để hàm apply_shared_feature_engineering có thể tính toán được hours_to_trending
-        parsed = parsed.withColumn("parsed_trending_date", F.current_timestamp())
+        parsed = normalize_input_columns(parsed)
+        parsed = parsed.withColumn(
+            "trending_date",
+            F.when(F.col("trending_date") == "", F.date_format(F.current_date(), "yyyy-MM-dd")).otherwise(F.col("trending_date")),
+        )
+        parsed = parse_trending_date(parsed)
+        parsed = parsed.withColumn(
+            "parsed_trending_date",
+            F.coalesce(F.col("parsed_trending_date"), F.current_date().cast("date")),
+        )
 
-        # Áp dụng chung logic từ file batch
         df_features = apply_shared_feature_engineering(parsed)
 
         return df_features.select(
             "video_id", "title", "views", "country",
             "log_views", "log_likes", "log_comment_count", "like_ratio", "comment_ratio",
-            "title_length", "tag_count", "publish_hour", "publish_dow",
-            "log_hours_to_trending" # Output đầy đủ
+            "title_length", "description_length", "tag_count",
+            "publish_hour", "publish_day_of_week"
         )
 
     def make_predictions(self, df):
         from pyspark.sql import functions as F
         predictions = self.model.transform(df)
         predictions = predictions \
-            .withColumn("predicted_trending_days", F.round(F.expr("expm1(prediction)"), 2)) \
+            .withColumn("predicted_trending_days", F.round(F.greatest(F.col("prediction"), F.lit(0.0)), 2)) \
             .select("video_id", "title", "views", "predicted_trending_days")
         return predictions
 

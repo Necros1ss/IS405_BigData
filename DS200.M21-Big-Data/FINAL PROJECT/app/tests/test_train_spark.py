@@ -1,15 +1,11 @@
-"""
-Unit tests for train_spark module.
-Tests model training, evaluation, and predictions.
-"""
+"""Unit tests for train_spark_v2_fixed module."""
 import unittest
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from app.train_spark import train_spark_model
+from app.train_spark_v2_fixed import train_spark_model
 
 
 class TestTrainSpark(unittest.TestCase):
-    """Test cases for train_spark functions."""
+    """Test cases for updated regression training."""
 
     @classmethod
     def setUpClass(cls):
@@ -25,78 +21,79 @@ class TestTrainSpark(unittest.TestCase):
         """Stop Spark session after tests."""
         cls.spark.stop()
 
-    def _create_test_data(self, num_rows=100):
-        """Create test feature data."""
+    def _create_test_data(self, num_rows=120):
+        """Create test dataframe with all required feature columns."""
         data = []
         for i in range(num_rows):
+            day = (i % 28) + 1
+            month = 1 + ((i // 28) % 6)
+            date_str = f"2024-{month:02d}-{day:02d}"
             data.append((
-                10 + i % 50,  # tag_count
-                100 + i % 500,  # description_length
-                0.01 + (i % 10) * 0.01,  # like_ratio
-                0.005 + (i % 5) * 0.005,  # comment_ratio
-                1000 + i * 10  # engagement
+                f"v{i}",
+                date_str,
+                "US" if i % 2 == 0 else "IN",
+                float(50 + i),
+                float(10 + i * 0.5),
+                float(5 + i * 0.2),
+                float(0.02 + (i % 10) * 0.01),
+                float(0.01 + (i % 5) * 0.005),
+                float(20 + i % 60),
+                float(80 + i % 500),
+                float(1 + i % 12),
+                float(1 + i % 7),
+                float(2 + i % 8),
+                float(3 + i % 10),
             ))
         return self.spark.createDataFrame(
             data,
-            ["tag_count", "description_length", "like_ratio", "comment_ratio", "engagement"]
+            [
+                "video_id", "parsed_trending_date", "country",
+                "log_views", "log_likes", "log_comment_count",
+                "like_ratio", "comment_ratio",
+                "title_length", "description_length", "tag_count",
+                "publish_hour", "publish_day_of_week", "trending_days",
+            ],
         )
 
     def test_train_spark_model_returns_tuple(self):
-        """Test that train_spark_model returns (model, predictions, metrics)."""
-        df = self._create_test_data(50)
-        model, predictions, metrics = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
+        df = self._create_test_data(80)
+        model, predictions, metrics = train_spark_model(df, num_trees=5, max_depth=3)
 
         self.assertIsNotNone(model)
         self.assertIsNotNone(predictions)
         self.assertIsNotNone(metrics)
         self.assertIsInstance(metrics, dict)
 
-    def test_model_has_auc_metric(self):
-        """Test that metrics include AUC."""
-        df = self._create_test_data(50)
-        model, predictions, metrics = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
+    def test_model_has_regression_metrics(self):
+        df = self._create_test_data(80)
+        _, _, metrics = train_spark_model(df, num_trees=5, max_depth=3)
 
-        self.assertIn("auc", metrics)
-        self.assertGreater(metrics["auc"], 0.0)
-        self.assertLessEqual(metrics["auc"], 1.0)
+        self.assertIn("rmse", metrics)
+        self.assertIn("mae", metrics)
+        self.assertIn("r2", metrics)
+        self.assertGreaterEqual(metrics["rmse"], 0.0)
+        self.assertGreaterEqual(metrics["mae"], 0.0)
 
-    def test_model_has_feature_importances(self):
-        """Test that metrics include feature importances."""
-        df = self._create_test_data(50)
-        model, predictions, metrics = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
+    def test_predictions_have_expected_columns(self):
+        df = self._create_test_data(90)
+        _, predictions, _ = train_spark_model(df, num_trees=5, max_depth=3)
 
-        self.assertIn("feature_importances", metrics)
-        importances = metrics["feature_importances"]
-        self.assertEqual(len(importances), 5)
-        self.assertTrue(all(0 <= v <= 1 for v in importances.values()))
-
-    def test_predictions_have_label_column(self):
-        """Test that predictions DataFrame has label column."""
-        df = self._create_test_data(50)
-        model, predictions, metrics = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
-
-        self.assertIn("label", predictions.columns)
         self.assertIn("prediction", predictions.columns)
+        self.assertIn("predicted_days", predictions.columns)
+        self.assertIn("trending_days", predictions.columns)
 
-    def test_sampling_reduces_rows(self):
-        """Test that sampling reduces dataset size."""
-        df = self._create_test_data(100)
-        model_full, pred_full, _ = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
-        model_sampled, pred_sampled, _ = train_spark_model(df, sample_fraction=0.1, no_sample=False, num_trees=5, max_depth=3)
-
-        # Sampled should have fewer rows
-        self.assertLess(pred_sampled.count(), pred_full.count())
+    def test_temporal_split_not_empty(self):
+        df = self._create_test_data(120)
+        _, predictions, _ = train_spark_model(df, num_trees=5, max_depth=3)
+        self.assertGreater(predictions.count(), 0)
 
     def test_different_hyperparameters(self):
-        """Test that different hyperparameters produce different models."""
         df = self._create_test_data(100)
-        model1, _, metrics1 = train_spark_model(df, no_sample=True, num_trees=5, max_depth=3)
-        model2, _, metrics2 = train_spark_model(df, no_sample=True, num_trees=10, max_depth=5)
+        _, _, metrics1 = train_spark_model(df, num_trees=5, max_depth=3)
+        _, _, metrics2 = train_spark_model(df, num_trees=10, max_depth=5)
 
-        # Different hyperparameters should produce different AUC values (in most cases)
-        # Note: This is probabilistic, so we just check both models work
-        self.assertIn("auc", metrics1)
-        self.assertIn("auc", metrics2)
+        self.assertIn("rmse", metrics1)
+        self.assertIn("rmse", metrics2)
 
 
 if __name__ == '__main__':

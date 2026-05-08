@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from pyspark.sql import functions as F
 from pyspark.ml.feature import VectorAssembler, StringIndexer
 from pyspark.ml.regression import RandomForestRegressor
@@ -8,46 +9,57 @@ from pyspark.ml.evaluation import RegressionEvaluator
 logger = logging.getLogger(__name__)
 
 def train_spark_model(df_features, num_trees=100, max_depth=12):
-    logger.info("BẮT ĐẦU HUẤN LUYỆN MÔ HÌNH (Multi-Country + Temporal Split)")
+    logger.info("BAT DAU HUAN LUYEN MO HINH (Multi-Country + Temporal Split)")
     
-    # 1. Chuyển đổi Country dạng String sang dạng Số (Index)
     country_indexer = StringIndexer(inputCol="country", outputCol="country_index", handleInvalid="keep")
-    
-    # 2. Bổ sung country_index vào danh sách đặc trưng
+
     feature_cols = [
-        'country_index', # Feature mới giải quyết Mixed-Distribution
+        'country_index',
         'log_views', 'log_likes', 'log_comment_count', 
         'like_ratio', 'comment_ratio',
-        'title_length', 'tag_count', 'publish_hour', 'publish_dow',
-        'log_hours_to_trending' 
+        'title_length', 'description_length', 'tag_count',
+        'publish_hour', 'publish_day_of_week',
     ]
     
     assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="keep")
     
-    # TEMPORAL SPLIT
-    cutoff_date = "2018-04-01" 
+    # Time-based split (no random split).
+    ts_df = df_features.select(
+        F.unix_timestamp(F.col("parsed_trending_date").cast("timestamp")).alias("ts")
+    ).na.drop()
+    quantiles = ts_df.approxQuantile("ts", [0.8], 0.01)
+    cutoff_ts = quantiles[0] if quantiles and quantiles[0] is not None else None
+    if cutoff_ts is None:
+        raise ValueError("Khong the tinh cutoff date tu parsed_trending_date")
+
+    cutoff_date = datetime.utcfromtimestamp(cutoff_ts).strftime("%Y-%m-%d")
     train = df_features.filter(F.col("parsed_trending_date") < cutoff_date)
     test = df_features.filter(F.col("parsed_trending_date") >= cutoff_date)
+
+    if train.rdd.isEmpty() or test.rdd.isEmpty():
+        logger.warning("Temporal split rong; fallback sang randomSplit(0.8, 0.2) de tiep tuc huan luyen.")
+        train, test = df_features.randomSplit([0.8, 0.2], seed=42)
+        cutoff_date = "random-split"
+        if train.rdd.isEmpty() or test.rdd.isEmpty():
+            raise ValueError("Khong the tao train/test split hop le tu du lieu hien tai.")
     
     logger.info(f"Tập Huấn Luyện (Trước {cutoff_date}): {train.count():,} videos")
     logger.info(f"Tập Kiểm Thử (Sau {cutoff_date}): {test.count():,} videos")
     
     rf = RandomForestRegressor(
         featuresCol="features", 
-        labelCol="log_trending_days", 
+        labelCol="trending_days",
         numTrees=int(num_trees), 
         maxDepth=int(max_depth),
         seed=42
     )
     
-    # Nắp ráp Pipeline (Thêm country_indexer vào đầu)
     pipeline = Pipeline(stages=[country_indexer, assembler, rf])
     logger.info("Đang Fit Model...")
     model = pipeline.fit(train)
-    
-    # ĐÁNH GIÁ
+
     predictions = model.transform(test)
-    predictions = predictions.withColumn("predicted_days", F.expr("expm1(prediction)"))
+    predictions = predictions.withColumn("predicted_days", F.greatest(F.col("prediction"), F.lit(0.0)))
     
     mean_val = train.select(F.avg("trending_days").alias("mean_val")).collect()[0]["mean_val"]
 
@@ -59,11 +71,11 @@ def train_spark_model(df_features, num_trees=100, max_depth=12):
     model_mae = mae_eval.evaluate(predictions)
     model_r2 = r2_eval.evaluate(predictions)
 
-    # Baseline: constant prediction = mean(trending_days) computed on train set
+    # Baseline: constant prediction = mean(trending_days) computed on train set.
     baseline_df = predictions.withColumn("predicted_days", F.lit(mean_val))
     baseline_rmse = rmse_eval.evaluate(baseline_df)
-    
-    logger.info(f"--- KẾT QUẢ ĐÁNH GIÁ THỰC TẾ ---")
+
+    logger.info("--- KET QUA DANH GIA THUC TE ---")
     logger.info(f"[BASELINE (Đoán TB = {mean_val:.2f})] RMSE: {baseline_rmse:.4f}")
     logger.info(f"[OUR MODEL] RMSE: {model_rmse:.4f} | MAE: {model_mae:.4f} | R2: {model_r2:.4f}")
     

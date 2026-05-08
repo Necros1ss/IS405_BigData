@@ -18,7 +18,7 @@ if [ -f .venv_spark/bin/activate ]; then
 fi
 
 # First positional argument is the data path (optional); remaining args are passed through
-DATA_PATH="${1:-data/*videos.csv}"
+DATA_PATH="${1:-data/cleaned_youtube_regression.parquet}"
 if [ "$#" -ge 1 ]; then
   # shift only if a positional was provided so $@ contains only flags
   shift
@@ -43,4 +43,4 @@ if [ -d "$SPARK_HOME" ]; then
   export PYTHONPATH="$PROJECT_ROOT:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
 fi
 
-python3 -m app.app_spark --data "$DATA_PATH" "$@"
+python3 -m app.app_spark_v2_fixed --data "$DATA_PATH" "$@"

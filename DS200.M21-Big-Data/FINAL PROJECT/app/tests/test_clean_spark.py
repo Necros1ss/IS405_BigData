@@ -1,17 +1,15 @@
-"""
-Unit tests for clean_spark module.
-Tests data loading, normalization, and feature engineering.
-"""
+"""Unit tests for clean_spark_v2_fixed module."""
 import unittest
-import tempfile
-import os
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from app.clean_spark import normalize_input_columns, engineer_features, load_csv_with_spark
+from app.clean_spark_v2_fixed import (
+    normalize_input_columns,
+    apply_shared_feature_engineering,
+    parse_trending_date,
+)
 
 
 class TestCleanSpark(unittest.TestCase):
-    """Test cases for clean_spark functions."""
+    """Test cases for new Kaggle schema normalization and feature engineering."""
 
     @classmethod
     def setUpClass(cls):
@@ -27,106 +25,75 @@ class TestCleanSpark(unittest.TestCase):
         """Stop Spark session after tests."""
         cls.spark.stop()
 
-    def test_normalize_input_columns_rename(self):
-        """Test column renaming."""
+    def test_normalize_input_columns_alias_mapping(self):
+        """New schema aliases should map into canonical names."""
         df = self.spark.createDataFrame([
-            (10, "tag1|tag2"),
-        ], ["like_count", "video_tags"])
+            ("v1", "Title", "Channel A", "22", "2024-01-01T10:00:00Z", "2024-01-02", 1000.0, 100.0, 20.0, "t1|t2", "desc"),
+        ], [
+            "video_id", "title", "channelTitle", "categoryId", "publishedAt",
+            "trending_date", "view_count", "likes", "comment_count", "tags", "description",
+        ])
 
+        result = normalize_input_columns(df)
+
+        self.assertIn("channel_title", result.columns)
+        self.assertIn("category_id", result.columns)
+        self.assertIn("publish_time", result.columns)
+        self.assertIn("views", result.columns)
+        self.assertEqual(result.select("views").first()[0], 1000.0)
+
+    def test_parse_trending_date(self):
+        df = self.spark.createDataFrame([
+            ("v1", "24.07.12"),
+            ("v2", "2024-07-12"),
+        ], ["video_id", "trending_date"])
+        normalized = normalize_input_columns(df)
+        parsed = parse_trending_date(normalized)
+        self.assertEqual(parsed.filter(parsed.parsed_trending_date.isNotNull()).count(), 2)
+
+    def test_feature_engineering_expected_columns(self):
+        df = self.spark.createDataFrame([
+            ("v1", "Title test", "desc text", "a|b|c", "2024-01-01T10:00:00Z", "2024-01-02", 2000.0, 200.0, 30.0),
+        ], [
+            "video_id", "title", "description", "tags", "publish_time",
+            "trending_date", "views", "likes", "comment_count",
+        ])
+        normalized = normalize_input_columns(df)
+        parsed = parse_trending_date(normalized)
+        featured = apply_shared_feature_engineering(parsed)
+
+        expected_cols = {
+            "log_views", "log_likes", "log_comment_count",
+            "like_ratio", "comment_ratio",
+            "publish_hour", "publish_day_of_week",
+            "title_length", "description_length", "tag_count",
+        }
+        self.assertTrue(expected_cols.issubset(set(featured.columns)))
+
+    def test_feature_engineering_ratios(self):
+        df = self.spark.createDataFrame([
+            ("v1", "t", "d", "x|y", "2024-01-01T10:00:00Z", "2024-01-02", 1000.0, 100.0, 50.0),
+        ], [
+            "video_id", "title", "description", "tags", "publish_time",
+            "trending_date", "views", "likes", "comment_count",
+        ])
+        normalized = normalize_input_columns(df)
+        parsed = parse_trending_date(normalized)
+        featured = apply_shared_feature_engineering(parsed)
+        row = featured.first()
+
+        self.assertAlmostEqual(row["like_ratio"], 0.1, places=6)
+        self.assertAlmostEqual(row["comment_ratio"], 0.05, places=6)
+
+    def test_missing_columns_are_added(self):
+        df = self.spark.createDataFrame([
+            ("v1", "2024-01-02"),
+        ], ["video_id", "trending_date"])
         result = normalize_input_columns(df)
 
         self.assertIn("likes", result.columns)
         self.assertIn("tags", result.columns)
-        self.assertNotIn("like_count", result.columns)
-
-    def test_normalize_input_columns_add_missing(self):
-        """Test adding missing columns."""
-        df = self.spark.createDataFrame([
-            (100, "description"),
-        ], ["view_count", "description"])
-
-        result = normalize_input_columns(df)
-
-        self.assertIn("tags", result.columns)
-        self.assertIn("likes", result.columns)
-
-    def test_engineer_features_creates_columns(self):
-        """Test feature engineering creates expected columns."""
-        df = self.spark.createDataFrame([
-            (1000, 50, 5, "tag1|tag2|tag3", "this is a description"),
-        ], ["view_count", "likes", "comment_count", "tags", "description"])
-
-        result = engineer_features(df)
-
-        expected_cols = {"tag_count", "description_length", "like_ratio", "comment_ratio", "engagement"}
-        self.assertTrue(expected_cols.issubset(set(result.columns)))
-
-    def test_engineer_features_calculates_ratios(self):
-        """Test that ratios are calculated correctly."""
-        df = self.spark.createDataFrame([
-            (1000, 100, 50, "tag1|tag2", "desc"),
-        ], ["view_count", "likes", "comment_count", "tags", "description"])
-
-        result = engineer_features(df)
-        rows = result.collect()
-
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        # like_ratio = 100 / (1000 + 1) ≈ 0.0999
-        self.assertAlmostEqual(row["like_ratio"], 100.0 / 1001.0, places=3)
-        # comment_ratio = 50 / (1000 + 1) ≈ 0.0499
-        self.assertAlmostEqual(row["comment_ratio"], 50.0 / 1001.0, places=3)
-        # engagement = 100 + 50 = 150
-        self.assertEqual(row["engagement"], 150.0)
-
-    def test_engineer_features_tag_count(self):
-        """Test tag count calculation."""
-        df = self.spark.createDataFrame([
-            (1000, 10, 5, "tag1|tag2|tag3|tag4", "desc"),
-        ], ["view_count", "likes", "comment_count", "tags", "description"])
-
-        result = engineer_features(df)
-        rows = result.collect()
-
-        self.assertEqual(rows[0]["tag_count"], 4)
-
-    def test_engineer_features_description_length(self):
-        """Test description length calculation."""
-        desc = "this is a test description"
-        df = self.spark.createDataFrame([
-            (1000, 10, 5, "tag1", desc),
-        ], ["view_count", "likes", "comment_count", "tags", "description"])
-
-        result = engineer_features(df)
-        rows = result.collect()
-
-        self.assertEqual(rows[0]["description_length"], len(desc))
-
-    def test_engineer_features_drops_nulls(self):
-        """Test that rows with nulls are dropped."""
-        df = self.spark.createDataFrame([
-            (1000, 10, 5, None, "desc"),  # null tags
-            (2000, 20, 10, "tag1|tag2", "desc"),  # valid
-        ], ["view_count", "likes", "comment_count", "tags", "description"])
-
-        result = engineer_features(df)
-        self.assertEqual(result.count(), 1)
-
-    def test_load_csv_with_spark(self):
-        """Test CSV loading functionality."""
-        # Create temporary CSV file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            f.write("view_count,likes,comment_count,tags,description\n")
-            f.write("1000,50,5,tag1|tag2,test description\n")
-            f.write("2000,100,10,tag1|tag2|tag3,another description\n")
-            temp_file = f.name
-
-        try:
-            df = load_csv_with_spark(self.spark, temp_file)
-            self.assertEqual(df.count(), 2)
-            self.assertIn("view_count", df.columns)
-        finally:
-            os.unlink(temp_file)
+        self.assertIn("publish_time", result.columns)
 
 
 if __name__ == '__main__':
