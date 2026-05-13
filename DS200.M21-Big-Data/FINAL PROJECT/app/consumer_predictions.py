@@ -27,11 +27,12 @@ def main():
         try:
             p = msg.value
             days = p.get("predicted_trending_days", 0.0)
+            views = p.get("views", p.get("view_count", 0.0))
             
             icon = "🔥 [KHỦNG]" if days >= 5.0 else ("⚡ [TRUNG BÌNH]" if days >= 2.0 else "❄️ [CHÌM]")
             
             logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] #{idx:04d} {icon} Dự đoán trụ được: {days} NGÀY")
-            logger.info(f"  ID: {p.get('video_id', 'N/A')} | Lượt xem đầu: {p.get('views', 0):,.0f}")
+            logger.info(f"  ID: {p.get('video_id', 'N/A')} | Lượt xem đầu: {views:,.0f}")
             logger.info(f"  Tiêu đề: {p.get('title', 'N/A')}")
             logger.info("-" * 60)
         except Exception as e:

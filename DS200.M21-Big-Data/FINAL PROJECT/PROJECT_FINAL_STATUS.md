@@ -1,6 +1,6 @@
 # 🎯 FINAL PROJECT STATUS - Complete Summary (2026-05-07)
 
-**Current Status:** ML Pipeline ✅ COMPLETE | Streaming Infrastructure 🟡 (Fix Required)
+**Current Status:** ML Pipeline ✅ COMPLETE | Streaming Infrastructure ✅ VERIFIED
 
 ---
 
@@ -13,7 +13,7 @@
 ✓ Anti-Leakage Validation (Day-1 snapshot)
 ✓ Parquet Output: data/cleaned_youtube_regression.parquet (7.5MB)
 ✓ Duration: ~2 minutes
-✓ Status: WORKING on 2026-05-07 14:43-14:45
+✓ Status: WORKING on 2026-05-10 17:12
 ```
 
 **Run Command:**
@@ -21,14 +21,22 @@
 python3 -m app.clean_spark_v2_fixed
 ```
 
+**Validated Run:**
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export SPARK_LOCAL_IP=127.0.0.1
+.venv_spark/bin/python -m app.clean_spark_v2_fixed
+```
+
 ### 2. Training Pipeline ✅ TESTED
 ```
 ✓ RandomForestRegressor Training
-✓ Train Set: 39,896 videos (before 2018-04-01)
-✓ Test Set: 17,476 videos (after 2018-04-01)
+✓ Train Set: 332,079 rows
+✓ Test Set: 83,019 rows
 ✓ Model Output: models/rf_model_demo (256KB)
-✓ Metrics: RMSE 2.8459 vs Baseline 3.1751 → 10% improvement ✅
-✓ Status: WORKING on 2026-05-07 14:46-14:47
+✓ Metrics: RMSE 4.1430 vs Baseline 4.1608 → model slightly better than baseline ✅
+✓ Status: WORKING on 2026-05-10 17:23
 ```
 
 **Run Command:**
@@ -40,13 +48,26 @@ python3 -m app.app_spark_v2_fixed \
   --save-model "models/rf_model_demo"
 ```
 
+**Validated Run:**
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export SPARK_LOCAL_IP=127.0.0.1
+.venv_spark/bin/python -m app.app_spark_v2_fixed \
+  --data "data/cleaned_youtube_regression.parquet" \
+  --num-trees 20 \
+  --max-depth 6 \
+  --save-model "models/rf_model_demo"
+```
+
 ### 3. Streaming Code ✅ READY
 ```
-✓ Producer (app/producer_youtube.py) - generates synthetic data
+✓ Producer (app/producer_youtube.py) - fetches latest YouTube Trending videos
 ✓ Streaming Consumer (app/streaming_spark.py) - loads model, makes predictions
 ✓ Result Consumer (app/consumer_predictions.py) - displays predictions
+✓ Test Producer (app/test_producer.py) - synthetic fallback for local Kafka tests
 ✓ All code verified and ready
-✓ Status: CODE READY, infrastructure pending
+✓ Status: CODE READY, infrastructure verified on 2026-05-10
 ```
 
 ### 4. Documentation ✅ COMPLETE
@@ -122,14 +143,14 @@ cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
 python3 -m app.producer_youtube \
   --kafka-servers localhost:9092 \
   --topic youtube_videos \
-  --source synthetic \
-  --rate 1 \
-  --burst-size 5 \
-  --num-messages 20
+  --region-code US \
+  --max-results 5 \
+  --poll-interval 1 \
+  --num-messages 5
 
 # Expected:
-# [2026-05-07 ...] Generating 5 synthetic videos...
-# [2026-05-07 ...] Sent 5 messages to youtube_videos topic
+# [2026-05-10 ...] Fetched 5 trending videos
+# #0001 Published: ...
 ```
 
 ### Terminal 3: Streaming Processor (WITH Kafka JAR)
@@ -137,9 +158,10 @@ python3 -m app.producer_youtube \
 cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
 source .venv_spark/bin/activate
 
-export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export SPARK_HOME=/home/thinh/spark
-export SPARK_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:4.1.1"
+export SPARK_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
+export SPARK_LOCAL_IP=127.0.0.1
 export PYTHONPATH="$PWD:/home/thinh/spark/python:/home/thinh/spark/python/lib/pyspark.zip:/home/thinh/spark/python/lib/py4j-0.10.9.9-src.zip"
 
 python3 -m app.streaming_spark \
@@ -150,10 +172,8 @@ python3 -m app.streaming_spark \
   --checkpoint-dir /tmp/spark_chkpt_youtube
 
 # Expected:
-# ✓ Khởi tạo Spark Streaming thành công
-# Reading from youtube_videos topic...
-# [Batch 0] Processing 5 videos...
-# Writing to youtube_predictions topic...
+# ✓ Model loaded successfully
+# ✓ Streaming started successfully
 ```
 
 ### Terminal 4: Result Display
@@ -165,8 +185,8 @@ python3 -m app.consumer_predictions \
   --topic youtube_predictions
 
 # Expected output (real-time):
-# [Prediction 1] Video ID: xxx, Title: "...", Predicted Trending Days: 4.2
-# [Prediction 2] Video ID: yyy, Title: "...", Predicted Trending Days: 2.8
+# [17:34:37] #0006 ⚡ [TRUNG BÌNH] Dự đoán trụ được: ... NGÀY
+#   ID: ... | Lượt xem đầu: ...
 ```
 
 ---
@@ -261,7 +281,7 @@ echo ""
 echo "✅ ML Pipeline Complete!"
 echo ""
 echo "Now start streaming (see STREAMING_EXECUTION_GUIDE.md):"
-echo "  Terminal 1: python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --source synthetic --num-messages 20"
+echo "  Terminal 1: python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --region-code US --max-results 5 --poll-interval 1 --num-messages 5"
 echo "  Terminal 2: python3 -m app.streaming_spark --kafka-servers localhost:9092 --input-topic youtube_videos --output-topic youtube_predictions --model-path models/rf_model_demo --checkpoint-dir /tmp/spark_chkpt_youtube"
 echo "  Terminal 3: python3 -m app.consumer_predictions --kafka-servers localhost:9092 --topic youtube_predictions"
 ```
@@ -277,9 +297,9 @@ echo "  Terminal 3: python3 -m app.consumer_predictions --kafka-servers localhos
 | **Model Artifact** | ✅ EXISTS | 256KB MLlib pipeline saved |
 | **Data Artifact** | ✅ EXISTS | 7.5MB parquet with 10 countries |
 | **Producer Code** | ✅ WORKING | Tested 15:54 - sends 20 videos ✓ |
-| **Streaming Code** | ✅ READY | With Kafka JAR - ready to test |
-| **Consumer Code** | ✅ WORKING | Tested 15:54 - connects to Kafka ✓ |
-| **Kafka Broker** | ✅ WORKING | Tested 15:53 - running + topics created ✓ |
+| **Streaming Code** | ✅ WORKING | Kafka connector 2.13:4.1.1 + Java 17 ✓ |
+| **Consumer Code** | ✅ WORKING | Reads `views`/`view_count` correctly ✓ |
+| **Kafka Broker** | ✅ WORKING | Topics ready and broker reachable ✓ |
 | **Documentation** | ✅ COMPLETE | All commands + terminal setup |
 
 ---
@@ -360,7 +380,7 @@ source .venv_spark/bin/activate
 
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export SPARK_HOME=/home/thinh/spark
-export SPARK_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.12:4.1.1"
+export SPARK_PACKAGES="org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
 export PYTHONPATH="$PWD:/home/thinh/spark/python:/home/thinh/spark/python/lib/pyspark.zip:/home/thinh/spark/python/lib/py4j-0.10.9.9-src.zip"
 
 python3 -m app.streaming_spark \
@@ -400,9 +420,9 @@ python3 -m app.consumer_predictions \
 
 | Time | Component | Status |
 |------|-----------|--------|
-| 14:43-14:45 | ETL | ✅ SUCCESS |
-| 14:46-14:47 | Training | ✅ SUCCESS |
-| 15:01-15:03 | Kafka Setup | 🟡 Metadata conflict (known issue) |
+| 17:12 | ETL | ✅ SUCCESS |
+| 17:23 | Training | ✅ SUCCESS |
+| 17:25-17:34 | Kafka + Streaming | ✅ SUCCESS |
 
 **Total Time Invested:** ~20 minutes of testing + documentation
 
@@ -430,19 +450,19 @@ python3 -m app.consumer_predictions \
 
 Before claiming pipeline complete:
 
-- [x] ETL generates parquet ← VERIFIED 14:45
-- [x] Training creates model ← VERIFIED 14:47
-- [x] Model beats baseline ← RMSE 2.8459 vs 3.1751 ✓
-- [x] Producer code runs ← TESTED 15:54 ✓
-- [x] Streaming code ready ← WITH Kafka JAR ✓ 
-- [x] Consumer code runs ← TESTED 15:54 ✓
-- [x] Kafka infrastructure ← TESTED 15:53 ✓
+- [x] ETL generates parquet ← VERIFIED 17:12
+- [x] Training creates model ← VERIFIED 17:23
+- [x] Model beats baseline ← RMSE 4.1430 vs 4.1608 ✓
+- [x] Producer code runs ← TESTED 17:34 ✓
+- [x] Streaming code runs ← TESTED 17:27 ✓ 
+- [x] Consumer code runs ← TESTED 17:28 ✓
+- [x] Kafka infrastructure ← TESTED 17:25 ✓
 - [x] Complete documentation ← ALL COMMANDS INCLUDED
 
 **Status:** ✅ READY FOR FULL STREAMING TEST
 
 ---
 
-**Project Status:** 🟢 PRODUCTION READY (ML) + � STREAMING READY (Kafka + JAR added)
+**Project Status:** 🟢 PRODUCTION READY (ML) + 🟢 STREAMING READY (Kafka + JAR added)
 
 **All Systems GO!** Execute BƯỚC 1-4 above for complete end-to-end test.

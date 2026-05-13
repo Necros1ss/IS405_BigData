@@ -8,6 +8,9 @@ scikit-learn>=1.0.0
 # Big Data Framework
 pyspark>=3.3.0
 
+# Kafka Streaming
+kafka-python>=2.0.0
+
 # Data Source
 kagglehub>=0.1.0
 

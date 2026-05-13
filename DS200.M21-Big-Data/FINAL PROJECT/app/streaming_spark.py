@@ -1,110 +1,156 @@
-import argparse
+#!/usr/bin/env python3
+
 import os
-import sys
-import logging
+import argparse
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+from pyspark.ml import PipelineModel
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+# ============================================================
+# SCHEMA & FEATURE ENGINEERING ĐỘC LẬP CHO STREAMING
+# ============================================================
+def get_streaming_schema():
+    return StructType([
+        StructField("video_id", StringType(), True),
+        StructField("title", StringType(), True),
+        StructField("publish_time", StringType(), True), 
+        StructField("tags", StringType(), True),
+        StructField("views", DoubleType(), True),
+        StructField("view_count", DoubleType(), True),
+        StructField("likes", DoubleType(), True),
+        StructField("comment_count", DoubleType(), True),
+        StructField("country", StringType(), True)
+    ])
 
-from app.clean_spark_v2_fixed import get_shared_schema, apply_shared_feature_engineering
-from app.clean_spark_v2_fixed import normalize_input_columns, parse_trending_date
+def apply_streaming_features(df):
+    df = df.withColumn("views_normalized", F.coalesce(F.col("views"), F.col("view_count")))
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+    # Parse thời gian
+    df = df.withColumn("publish_timestamp", F.to_timestamp("publish_time"))
+    
+    # Tính giờ trụ top trending (Mô phỏng: thời điểm hiện tại - thời điểm publish)
+    # Fallback: if parsed_trending_date missing, use current_timestamp
+    df = df.withColumn("parsed_trending_date", 
+                       F.when(F.col("parsed_trending_date").isNotNull(), F.col("parsed_trending_date"))
+                       .otherwise(F.current_timestamp()))
+    
+    df = df.withColumn(
+        "hours_to_trending",
+        (F.unix_timestamp(F.col("parsed_trending_date")) - F.unix_timestamp(F.col("publish_timestamp"))) / 3600.0
+    )
+    df = df.withColumn("hours_to_trending", F.when(F.col("hours_to_trending") < 0, 0.0).otherwise(F.col("hours_to_trending")))
+    df = df.withColumn("log_hours_to_trending", F.log1p(F.col("hours_to_trending")))
 
-class KafkaStreamingPipeline:
-    def __init__(self, kafka_servers, input_topic, output_topic, model_path, checkpoint_dir):
-        self.kafka_servers = kafka_servers
-        self.input_topic = input_topic
-        self.output_topic = output_topic
-        self.model_path = model_path
-        self.checkpoint_dir = checkpoint_dir
-        self.spark = None
-        self.model = None
+    # Đặc trưng Text và Thời gian
+    df = df.withColumn("title_length", F.when(F.col("title").isNull(), 0.0).otherwise(F.length(F.col("title")).cast(DoubleType())))
+    df = df.withColumn("publish_hour", F.when(F.col("publish_timestamp").isNull(), 12.0).otherwise(F.hour(F.col("publish_timestamp")).cast(DoubleType())))
+    df = df.withColumn("publish_dow", F.when(F.col("publish_timestamp").isNull(), 1.0).otherwise(F.dayofweek(F.col("publish_timestamp")).cast(DoubleType())))
 
-    def build_spark_session(self):
-        from pyspark.sql import SparkSession
-        self.spark = SparkSession.builder.appName("YouTubeStreaming_Prod") \
-            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
-            .config("spark.sql.streaming.metricsEnabled", "false") \
-            .config("spark.sql.shuffle.partitions", "10") \
-            .getOrCreate()
-        self.spark.sparkContext.setLogLevel("WARN")
-        logger.info("✓ Khởi tạo Spark Streaming thành công")
+    # Log biến đếm
+    df = df.withColumn("log_views", F.log1p(F.col("views_normalized")))
+    df = df.withColumn("log_likes", F.log1p(F.col("likes")))
+    df = df.withColumn("log_comment_count", F.log1p(F.col("comment_count")))
 
-    def load_model(self):
-        from pyspark.ml import PipelineModel
-        try:
-            self.model = PipelineModel.load(self.model_path)
-            logger.info(f"✓ Đã load mô hình từ {self.model_path}")
-        except Exception as e:
-            logger.error(f"✗ Không thể load mô hình: {e}")
-            sys.exit(1)
+    # Tính tỷ lệ
+    df = df.withColumn("like_ratio", F.when(F.col("views_normalized") == 0, 0.0).otherwise(F.col("likes") / F.col("views_normalized")))
+    df = df.withColumn("comment_ratio", F.when(F.col("views_normalized") == 0, 0.0).otherwise(F.col("comment_count") / F.col("views_normalized")))
 
-    def process_stream(self, df):
-        from pyspark.sql import functions as F
-        raw_schema = get_shared_schema()
+    return df
 
-        parsed = df.select(F.from_json(F.col("value").cast("string"), raw_schema).alias("data")).select("data.*")
-
-        parsed = normalize_input_columns(parsed)
-        parsed = parsed.withColumn(
-            "trending_date",
-            F.when(F.col("trending_date") == "", F.date_format(F.current_date(), "yyyy-MM-dd")).otherwise(F.col("trending_date")),
-        )
-        parsed = parse_trending_date(parsed)
-        parsed = parsed.withColumn(
-            "parsed_trending_date",
-            F.coalesce(F.col("parsed_trending_date"), F.current_date().cast("date")),
-        )
-
-        df_features = apply_shared_feature_engineering(parsed)
-
-        return df_features.select(
-            "video_id", "title", "views", "country",
-            "log_views", "log_likes", "log_comment_count", "like_ratio", "comment_ratio",
-            "title_length", "description_length", "tag_count",
-            "publish_hour", "publish_day_of_week"
-        )
-
-    def make_predictions(self, df):
-        from pyspark.sql import functions as F
-        predictions = self.model.transform(df)
-        predictions = predictions \
-            .withColumn("predicted_trending_days", F.round(F.greatest(F.col("prediction"), F.lit(0.0)), 2)) \
-            .select("video_id", "title", "views", "predicted_trending_days")
-        return predictions
-
-    def run(self):
-        self.build_spark_session()
-        self.load_model()
-        
-        df_stream = self.spark.readStream.format("kafka") \
-            .option("kafka.bootstrap.servers", self.kafka_servers) \
-            .option("subscribe", self.input_topic).load()
-            
-        df_processed = self.process_stream(df_stream)
-        df_predictions = self.make_predictions(df_processed)
-        
-        from pyspark.sql import functions as F
-        output = df_predictions.select(F.to_json(F.struct("*")).alias("value"))
-        
-        logger.info(f"⏳ Đang chạy luồng Streaming đẩy sang {self.output_topic}...")
-        query = output.writeStream.format("kafka") \
-            .option("kafka.bootstrap.servers", self.kafka_servers) \
-            .option("topic", self.output_topic) \
-            .option("checkpointLocation", self.checkpoint_dir) \
-            .start()
-        
-        query.awaitTermination()
-
-if __name__ == "__main__":
+# ============================================================
+# MAIN STREAMING
+# ============================================================
+def run_stream():
+    # Hứng tham số từ Terminal
     parser = argparse.ArgumentParser()
     parser.add_argument("--kafka-servers", default="localhost:9092")
     parser.add_argument("--input-topic", default="youtube_videos")
     parser.add_argument("--output-topic", default="youtube_predictions")
-    parser.add_argument("--model-path", default="models/rf_regression_model")
-    parser.add_argument("--checkpoint-dir", default="hdfs://localhost:9000/user/thinh/spark_chkpt")
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--checkpoint-dir", required=True)
     args = parser.parse_args()
-    
-    KafkaStreamingPipeline(args.kafka_servers, args.input_topic, args.output_topic, args.model_path, args.checkpoint_dir).run()
+
+    if not os.path.exists(args.model_path):
+        raise Exception(f"✗ Không tìm thấy Model tại: {args.model_path}")
+
+    # Dùng đúng Kafka connector khớp với Spark runtime đang cài
+    kafka_package = "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
+    print(f"Loading stable Kafka package: {kafka_package}")
+
+    spark = (
+        SparkSession.builder
+        .appName("YouTubeTrendingRealtimePrediction")
+        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.jars.packages", kafka_package) # Tải tự động package
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+
+    print("=" * 80)
+    print("YOUTUBE TRENDING REALTIME PREDICTION (KAFKA)")
+    print("=" * 80)
+
+    print(f"Loading trained model from {args.model_path}...")
+    model = PipelineModel.load(args.model_path)
+    print("✓ Model loaded successfully")
+
+    print(f"Connecting to Kafka stream (Topic: {args.input_topic})...")
+    stream_df = (
+        spark.readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", args.kafka_servers)
+        .option("subscribe", args.input_topic)
+        .option("startingOffsets", "latest")
+        .load()
+    )
+
+    raw_schema = get_streaming_schema()
+    parsed_df = (
+        stream_df.select(
+            F.from_json(F.col("value").cast("string"), raw_schema).alias("data")
+        ).select("data.*")
+    )
+
+    # Đánh dấu thời gian lúc luồng dữ liệu chạy vào làm trending_date giả lập
+    parsed_df = parsed_df.withColumn("parsed_trending_date", F.current_timestamp())
+
+    print("Applying feature engineering...")
+    features_df = apply_streaming_features(parsed_df)
+
+    predictions = model.transform(features_df)
+
+    # Đảo ngược Log về số ngày thực tế
+    predictions = predictions.withColumn(
+        "predicted_trending_days",
+        F.round(F.expr("expm1(raw_prediction)"), 2)
+    )
+
+    output_df = predictions.select(
+        F.col("video_id"),
+        F.when(F.col("title").isNull(), F.lit("Unknown Title")).otherwise(F.col("title")).alias("title"),
+        F.when(F.col("country").isNull(), F.lit("Unknown")).otherwise(F.col("country")).alias("country"),
+        F.col("views_normalized").alias("views"),
+        F.col("predicted_trending_days"),
+        F.current_timestamp().alias("prediction_time")
+    )
+
+    # ĐÓNG GÓI JSON VÀ GỬI SANG TOPIC PREDICTIONS CHO CONSUMER ĐỌC
+    print(f"Starting realtime prediction stream to Kafka ({args.output_topic})...")
+    kafka_output_df = output_df.select(F.to_json(F.struct("*")).alias("value"))
+
+    query = (
+        kafka_output_df.writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", args.kafka_servers)
+        .option("topic", args.output_topic)
+        .option("checkpointLocation", args.checkpoint_dir)
+        .start()
+    )
+
+    print("✓ Streaming started successfully")
+    print("=" * 80)
+    query.awaitTermination()
+
+if __name__ == "__main__":
+    run_stream()

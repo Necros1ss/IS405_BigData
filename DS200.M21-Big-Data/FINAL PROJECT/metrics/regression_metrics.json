@@ -1,0 +1,19 @@
+{
+    "rmse": 4.14299654124511,
+    "mae": 2.249010944788089,
+    "r2": 0.008477023634880121,
+    "baseline_rmse": 4.1607542050878275,
+    "train_rows": 332079,
+    "test_rows": 83019,
+    "features": [
+        "log_views",
+        "log_likes",
+        "log_comment_count",
+        "like_ratio",
+        "comment_ratio",
+        "title_length",
+        "publish_hour",
+        "publish_dow",
+        "log_hours_to_trending"
+    ]
+}
