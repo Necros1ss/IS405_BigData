@@ -3,6 +3,11 @@
 import os
 import json
 import logging
+
+from app.spark_bootstrap import ensure_spark_runtime
+
+ensure_spark_runtime()
+
 from pyspark.sql import functions as F
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import RandomForestRegressor
@@ -15,9 +20,12 @@ def train_spark_model(df, num_trees=100, max_depth=12):
     # ============================================================
     # TEMPORAL SPLIT
     # ============================================================
-    print("\nSplitting data 80% Train / 20% Test...")
+    print("\nSplitting data:")
+    print("\nTrain data:")
+    print("\nTest data:")
 
-    train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+    train_df = df.filter(F.col("trending_date_parsed") < "2026-01-01")
+    test_df = df.filter(F.col("trending_date_parsed") >= "2026-01-01")
 
     train_count = train_df.count()
     test_count = test_df.count()

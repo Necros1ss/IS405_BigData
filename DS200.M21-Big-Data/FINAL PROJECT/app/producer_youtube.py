@@ -9,7 +9,6 @@ import logging
 import argparse
 import json
 import os
-import random
 import time
 from datetime import datetime
 
@@ -140,38 +139,6 @@ def fetch_trending_videos(
     return results
 
 
-def generate_synthetic_videos(region_code="US", max_results=10):
-    """Generate synthetic but schema-compatible video records for local testing."""
-    adjectives = ["Amazing", "New", "Top", "Hot", "Latest", "Viral"]
-    topics = ["Music", "Gaming", "Tech", "News", "Sports", "Movie"]
-    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    rows = []
-    for _ in range(max(1, min(int(max_results), 50))):
-        adj = random.choice(adjectives)
-        topic = random.choice(topics)
-        views = random.randint(5_000, 5_000_000)
-        likes = int(views * random.uniform(0.01, 0.12))
-        comments = int(views * random.uniform(0.001, 0.03))
-        unique_suffix = int(time.time() * 1000) + random.randint(0, 999)
-
-        rows.append(
-            {
-                "video_id": f"syn_{unique_suffix}",
-                "title": f"{adj} {topic} Video #{random.randint(1, 9999)}",
-                "publish_time": now,
-                "tags": f"{topic}|trending|synthetic",
-                "views": float(views),
-                "view_count": float(views),
-                "likes": float(likes),
-                "comment_count": float(comments),
-                "country": region_code,
-            }
-        )
-
-    return rows
-
-
 # =========================================================
 # MAIN
 # =========================================================
@@ -190,13 +157,6 @@ def main():
         "--topic",
         default=YOUTUBE_TOPIC,
         help="Kafka topic"
-    )
-
-    parser.add_argument(
-        "--source",
-        choices=["api", "synthetic"],
-        default="api",
-        help="Data source mode: 'api' uses YouTube Data API, 'synthetic' generates local test data"
     )
 
     parser.add_argument(
@@ -255,7 +215,7 @@ def main():
     if args.rate is not None and args.rate > 0:
         args.poll_interval = 1.0 / args.rate
 
-    if args.source == "api" and not youtube_api_key:
+    if not youtube_api_key:
         print("✗ YOUTUBE_API_KEY is not set.")
         return False
 
@@ -279,7 +239,7 @@ def main():
 
     print(f"Kafka Servers : {args.kafka_servers}")
     print(f"Topic         : {args.topic}")
-    print(f"Source        : {args.source}")
+    print("Source        : api")
     print(f"Region        : {args.region_code}")
     print(f"Max Results   : {args.max_results}")
     print(f"Poll Interval : {args.poll_interval}s")
@@ -304,18 +264,12 @@ def main():
                 break
 
             try:
-                if args.source == "api":
-                    videos = fetch_trending_videos(
-                        api_key=youtube_api_key,
-                        region_code=args.region_code,
-                        max_results=args.max_results,
-                        category_id=args.category_id
-                    )
-                else:
-                    videos = generate_synthetic_videos(
-                        region_code=args.region_code,
-                        max_results=args.max_results,
-                    )
+                videos = fetch_trending_videos(
+                    api_key=youtube_api_key,
+                    region_code=args.region_code,
+                    max_results=args.max_results,
+                    category_id=args.category_id
+                )
 
                 print(
                     f"\n[{datetime.now().strftime('%H:%M:%S')}] "

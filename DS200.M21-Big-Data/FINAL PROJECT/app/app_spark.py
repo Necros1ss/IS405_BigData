@@ -11,6 +11,9 @@ sys.path.insert(0, project_root)
 
 # IMPORT ĐÚNG TÊN FILE
 try:
+    from app.spark_bootstrap import ensure_spark_runtime
+
+    ensure_spark_runtime()
     from app.train_spark import train_spark_model
 except ImportError as e:
     print(f"✗ Lỗi import: {e}. Vui lòng chạy lệnh từ thư mục gốc của project.")

@@ -1,6 +1,10 @@
 """
 Prediction utilities for Spark ML pipeline.
 """
+from app.spark_bootstrap import ensure_spark_runtime
+
+ensure_spark_runtime()
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 

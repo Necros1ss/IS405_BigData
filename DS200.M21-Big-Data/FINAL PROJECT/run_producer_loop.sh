@@ -14,6 +14,7 @@ while true; do
   python3 -m app.producer_youtube \
     --kafka-servers localhost:9092 \
     --topic youtube_videos \
+    --source api \
     --region-code US \
     --max-results 50 \
     --poll-interval 30 \

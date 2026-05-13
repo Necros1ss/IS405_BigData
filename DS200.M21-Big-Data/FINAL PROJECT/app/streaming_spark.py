@@ -2,6 +2,11 @@
 
 import os
 import argparse
+
+from app.spark_bootstrap import ensure_spark_runtime
+
+ensure_spark_runtime()
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType

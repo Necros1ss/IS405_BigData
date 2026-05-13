@@ -18,7 +18,7 @@ source .venv_spark/bin/activate  # optional
 python3 -m app.spark_data_cleaner
 
 # 2) Train model (reads cleaned parquet)
-python3 -m app.app_spark_v2_fixed --data "data/cleaned_youtube_regression.parquet" --num-trees 20 --max-depth 6 --save-model "models/rf_model_demo"
+python3 -m app.app_spark --data "data/cleaned_youtube_regression.parquet" --num-trees 20 --max-depth 6 --save-model "models/rf_model_demo"
 ```
 
 Quick streaming (requires Kafka broker)
@@ -27,11 +27,11 @@ Quick streaming (requires Kafka broker)
 # Start streaming processor
 python3 -m app.streaming_spark --kafka-servers localhost:9092 --input-topic youtube_videos --output-topic youtube_predictions --model-path models/rf_model_demo --checkpoint-dir /tmp/spark_chkpt_youtube
 
-# Start producer (in another terminal, synthetic mode for local demo)
-python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --source synthetic --rate 1 --max-results 5
+# Start producer against the real YouTube Trending feed (requires YOUTUBE_API_KEY)
+python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --rate 1 --max-results 5
 
 # Start producer with real YouTube API (requires YOUTUBE_API_KEY)
-# python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --source api --region-code US --max-results 5 --poll-interval 60
+# python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --region-code US --max-results 5 --poll-interval 60
 
 # Start consumer (another terminal)
 python3 -m app.consumer_predictions --kafka-servers localhost:9092 --topic youtube_predictions

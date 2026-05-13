@@ -44,11 +44,10 @@ python3 -m app.streaming_spark \
   --model-path models/rf_model_demo \
   --checkpoint-dir /tmp/spark_chkpt_youtube
 
-# Terminal 5: producer (synthetic demo mode, no API key needed)
+# Terminal 5: producer against the real YouTube Trending feed (requires YOUTUBE_API_KEY)
 python3 -m app.producer_youtube \
   --kafka-servers localhost:9092 \
   --topic youtube_videos \
-  --source synthetic \
   --rate 1 \
   --max-results 5
 

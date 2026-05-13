@@ -7,7 +7,23 @@ Usage:
 import sys
 from pathlib import Path
 
+
+def ensure_spark_runtime():
+    import os
+
+    spark_home = os.environ.get("SPARK_HOME", "/home/thinh/spark")
+    bundled_paths = [
+        os.path.join(spark_home, "python"),
+        os.path.join(spark_home, "python", "lib", "pyspark.zip"),
+        os.path.join(spark_home, "python", "lib", "py4j-src.zip"),
+    ]
+
+    for path in reversed(bundled_paths):
+        if os.path.exists(path) and path not in sys.path:
+            sys.path.insert(0, path)
+
 def convert_with_pyspark(inp, out):
+    ensure_spark_runtime()
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.appName("csv_to_parquet").getOrCreate()
     df = spark.read.option("header", True).csv(str(inp))
