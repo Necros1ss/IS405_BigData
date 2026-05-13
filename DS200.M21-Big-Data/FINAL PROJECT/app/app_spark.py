@@ -11,7 +11,7 @@ sys.path.insert(0, project_root)
 
 # IMPORT ĐÚNG TÊN FILE
 try:
-    from app.train_spark_v2_fixed import train_spark_model
+    from app.train_spark import train_spark_model
 except ImportError as e:
     print(f"✗ Lỗi import: {e}. Vui lòng chạy lệnh từ thư mục gốc của project.")
     sys.exit(1)
@@ -35,7 +35,7 @@ def main():
     logger.info(f"Bắt đầu quy trình huấn luyện: {datetime.now().strftime('%H:%M:%S')}")
     
     if not os.path.exists(args.data):
-        logger.error(f"Không tìm thấy data tại {args.data}. Hãy chạy clean_spark_v2_fixed.py trước!")
+        logger.error(f"Không tìm thấy data tại {args.data}. Hãy chạy spark_data_cleaner (python3 -m app.spark_data_cleaner) trước!")
         return
 
     df_features = spark.read.parquet(args.data)

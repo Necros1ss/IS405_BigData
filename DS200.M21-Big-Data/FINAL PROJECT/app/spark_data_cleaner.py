@@ -1,22 +1,37 @@
 #!/usr/bin/env python3
 
 import os
+import logging
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType
 
+try:
+    from app.config import (
+        RAW_DATA_PATH,
+        CLEAN_DATA_PATH,
+        SPARK_APP_NAME
+    )
+except ImportError:
+    from config import (
+        RAW_DATA_PATH,
+        CLEAN_DATA_PATH,
+        SPARK_APP_NAME
+    )
+
 def clean_data():
     spark = (
         SparkSession.builder
-        .appName("YouTubeTrendingRegressionCleaning")
+        .appName(SPARK_APP_NAME)
         .config("spark.sql.shuffle.partitions", "20") # Nên để 20-50 thay vì 8 cho Big Data
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("ERROR")
 
-    INPUT_PATH = "data/GLOBAL_youtube_trending.csv"
-    OUTPUT_PATH = "data/cleaned_youtube_regression.parquet"
+    INPUT_PATH = RAW_DATA_PATH
+    OUTPUT_PATH = CLEAN_DATA_PATH
 
     print("Loading dataset...")
     df = (

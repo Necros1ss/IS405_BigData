@@ -5,14 +5,29 @@ Fetches videos directly from YouTube Trending tab (mostPopular)
 and publishes them to Kafka.
 """
 
+import logging
 import argparse
 import json
 import os
+import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
 from kafka import KafkaProducer
+
+try:
+    from app.config import (
+        KAFKA_BROKER,
+        YOUTUBE_TOPIC,
+        YOUTUBE_API_KEY
+    )
+except ImportError:
+    from config import (
+        KAFKA_BROKER,
+        YOUTUBE_TOPIC,
+        YOUTUBE_API_KEY
+    )
 
 
 # =========================================================
@@ -90,6 +105,22 @@ def fetch_trending_videos(
 
         tags = snippet.get("tags") or []
 
+        view_count_raw = stats.get("viewCount")
+        likes_raw = stats.get("likeCount")
+        comments_raw = stats.get("commentCount")
+
+        # Some trending entries (TV/sports clips, restricted programs) may hide statistics.
+        # Skip them instead of coercing to 0 which can look like bad data.
+        if view_count_raw is None or likes_raw is None or comments_raw is None:
+            logging.info(
+                "Skipping %s: statistics unavailable (views=%s, likes=%s, comments=%s)",
+                item.get("id", ""),
+                view_count_raw,
+                likes_raw,
+                comments_raw,
+            )
+            continue
+
         video_data = {
             "video_id": item.get("id", ""),
             "title": snippet.get("title", ""),
@@ -97,24 +128,48 @@ def fetch_trending_videos(
             "tags": "|".join(
                 tags if isinstance(tags, list) else []
             ),
-            "views": float(
-                stats.get("viewCount", 0) or 0
-            ),
-            "view_count": float(
-                stats.get("viewCount", 0) or 0
-            ),
-            "likes": float(
-                stats.get("likeCount", 0) or 0
-            ),
-            "comment_count": float(
-                stats.get("commentCount", 0) or 0
-            ),
+            "views": float(view_count_raw),
+            "view_count": float(view_count_raw),
+            "likes": float(likes_raw),
+            "comment_count": float(comments_raw),
             "country": region_code,
         }
 
         results.append(video_data)
 
     return results
+
+
+def generate_synthetic_videos(region_code="US", max_results=10):
+    """Generate synthetic but schema-compatible video records for local testing."""
+    adjectives = ["Amazing", "New", "Top", "Hot", "Latest", "Viral"]
+    topics = ["Music", "Gaming", "Tech", "News", "Sports", "Movie"]
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    rows = []
+    for _ in range(max(1, min(int(max_results), 50))):
+        adj = random.choice(adjectives)
+        topic = random.choice(topics)
+        views = random.randint(5_000, 5_000_000)
+        likes = int(views * random.uniform(0.01, 0.12))
+        comments = int(views * random.uniform(0.001, 0.03))
+        unique_suffix = int(time.time() * 1000) + random.randint(0, 999)
+
+        rows.append(
+            {
+                "video_id": f"syn_{unique_suffix}",
+                "title": f"{adj} {topic} Video #{random.randint(1, 9999)}",
+                "publish_time": now,
+                "tags": f"{topic}|trending|synthetic",
+                "views": float(views),
+                "view_count": float(views),
+                "likes": float(likes),
+                "comment_count": float(comments),
+                "country": region_code,
+            }
+        )
+
+    return rows
 
 
 # =========================================================
@@ -127,14 +182,21 @@ def main():
 
     parser.add_argument(
         "--kafka-servers",
-        default="localhost:9092",
+        default=KAFKA_BROKER,
         help="Kafka broker addresses"
     )
 
     parser.add_argument(
         "--topic",
-        default="youtube_videos",
+        default=YOUTUBE_TOPIC,
         help="Kafka topic"
+    )
+
+    parser.add_argument(
+        "--source",
+        choices=["api", "synthetic"],
+        default="api",
+        help="Data source mode: 'api' uses YouTube Data API, 'synthetic' generates local test data"
     )
 
     parser.add_argument(
@@ -155,6 +217,13 @@ def main():
         type=float,
         default=300.0,
         help="Polling interval in seconds"
+    )
+
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=None,
+        help="Messages per second alias for quick demo (overrides --poll-interval as 1/rate)"
     )
 
     parser.add_argument(
@@ -181,9 +250,12 @@ def main():
     # Load .env
     load_env_file()
 
-    youtube_api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    youtube_api_key = os.getenv("YOUTUBE_API_KEY", YOUTUBE_API_KEY)
 
-    if not youtube_api_key:
+    if args.rate is not None and args.rate > 0:
+        args.poll_interval = 1.0 / args.rate
+
+    if args.source == "api" and not youtube_api_key:
         print("✗ YOUTUBE_API_KEY is not set.")
         return False
 
@@ -207,6 +279,7 @@ def main():
 
     print(f"Kafka Servers : {args.kafka_servers}")
     print(f"Topic         : {args.topic}")
+    print(f"Source        : {args.source}")
     print(f"Region        : {args.region_code}")
     print(f"Max Results   : {args.max_results}")
     print(f"Poll Interval : {args.poll_interval}s")
@@ -231,15 +304,18 @@ def main():
                 break
 
             try:
-                videos = fetch_trending_videos(
-                    api_key=youtube_api_key,
-
-                    region_code=args.region_code,
-
-                    max_results=args.max_results,
-
-                    category_id=args.category_id
-                )
+                if args.source == "api":
+                    videos = fetch_trending_videos(
+                        api_key=youtube_api_key,
+                        region_code=args.region_code,
+                        max_results=args.max_results,
+                        category_id=args.category_id
+                    )
+                else:
+                    videos = generate_synthetic_videos(
+                        region_code=args.region_code,
+                        max_results=args.max_results,
+                    )
 
                 print(
                     f"\n[{datetime.now().strftime('%H:%M:%S')}] "
@@ -292,7 +368,7 @@ def main():
                 )
 
             except Exception as e:
-                print(f"✗ API Error: {e}")
+                logger.exception("Producer error occurred")
 
                 time.sleep(5)
 
