@@ -32,7 +32,14 @@ def apply_streaming_features(df):
     df = df.withColumn("views_normalized", F.coalesce(F.col("views"), F.col("view_count")))
 
     # Parse thời gian
-    df = df.withColumn("publish_timestamp", F.to_timestamp("publish_time"))
+    # Empty strings or malformed timestamps can appear in streaming payloads,
+    # so normalize them to NULL before parsing.
+    df = df.withColumn(
+        "publish_timestamp",
+        F.to_timestamp(
+            F.when(F.trim(F.col("publish_time")) == "", None).otherwise(F.col("publish_time"))
+        )
+    )
     
     # Tính giờ trụ top trending (Mô phỏng: thời điểm hiện tại - thời điểm publish)
     # Fallback: if parsed_trending_date missing, use current_timestamp

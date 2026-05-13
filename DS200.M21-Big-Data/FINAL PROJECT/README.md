@@ -18,27 +18,43 @@ source .venv_spark/bin/activate  # optional
 python3 -m app.spark_data_cleaner
 
 # 2) Train model (reads cleaned parquet)
-python3 -m app.app_spark --data "data/cleaned_youtube_regression.parquet" --num-trees 20 --max-depth 6 --save-model "models/rf_model_demo"
+python3 -m app.app_spark --data "data/cleaned_youtube_regression.parquet" --num-trees 20 --max-depth 6 --save-model "models/rf_regression_model"
 ```
 
-Quick streaming (requires Kafka broker)
+Quick streaming demo (requires Kafka broker)
 
 ```bash
-# Start streaming processor
-python3 -m app.streaming_spark --kafka-servers localhost:9092 --input-topic youtube_videos --output-topic youtube_predictions --model-path models/rf_model_demo --checkpoint-dir /tmp/spark_chkpt_youtube
+# 0) Clean Kafka state
+bash scripts/reset_kafka.sh
 
-# Start producer against the real YouTube Trending feed (requires YOUTUBE_API_KEY)
-python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --rate 1 --max-results 5
+# 1) Recreate the topics used by the stream
+cd "$HOME/kafka"
+./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic youtube_videos --partitions 1 --replication-factor 1
+./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic youtube_predictions --partitions 1 --replication-factor 1
 
-# Start producer with real YouTube API (requires YOUTUBE_API_KEY)
-# python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --region-code US --max-results 5 --poll-interval 60
+# 2) Start the streaming predictor (new checkpoint when Kafka topics are recreated)
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+python3 -m app.streaming_spark --kafka-servers localhost:9092 --input-topic youtube_videos --output-topic youtube_predictions --model-path models/rf_regression_model --checkpoint-dir /tmp/spark_chkpt_youtube_2
 
-# Start consumer (another terminal)
+# 3) Start the consumer in another terminal
 python3 -m app.consumer_predictions --kafka-servers localhost:9092 --topic youtube_predictions
+
+# 4) Send one producer batch and exit after 20 messages
+python3 -m app.producer_youtube --kafka-servers localhost:9092 --topic youtube_videos --region-code US --max-results 20 --poll-interval 1 --num-messages 20
+```
+
+If you want continuous batches instead of a single demo batch, use:
+
+```bash
+cd "/home/thinh/Documents/IS_BigData/DS200.M21-Big-Data/FINAL PROJECT"
+
+bash run_producer_loop.sh
 ```
 
 Notes
 - If Kafka fails with `InconsistentClusterIdException`, run `bash scripts/reset_kafka.sh` before starting streaming.
+- If you recreate Kafka topics, use a fresh Spark checkpoint directory like `/tmp/spark_chkpt_youtube_2` so the streaming query does not reuse stale offsets.
+- `run_producer_loop.sh` loads `.env` automatically, so the YouTube API key can stay in the project file.
 - If you plan to run Spark locally, ensure `JAVA_HOME` and `SPARK_HOME` are set and add Spark Python paths to `PYTHONPATH`.
 
 This repository is intentionally kept minimal for final submission/demo: core app code, required scripts, and concise run guides.

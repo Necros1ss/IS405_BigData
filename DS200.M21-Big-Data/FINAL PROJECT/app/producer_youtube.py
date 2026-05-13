@@ -161,7 +161,7 @@ def main():
 
     parser.add_argument(
         "--region-code",
-        default="US",
+        default="VN",
         help="Trending region (US, VN, JP, KR, etc.)"
     )
 

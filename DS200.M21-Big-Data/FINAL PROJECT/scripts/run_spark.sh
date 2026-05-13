@@ -43,4 +43,4 @@ if [ -d "$SPARK_HOME" ]; then
   export PYTHONPATH="$PROJECT_ROOT:$SPARK_HOME/python:$SPARK_HOME/python/lib/pyspark.zip:$SPARK_HOME/python/lib/py4j-0.10.9.9-src.zip"
 fi
 
-python3 -m app.app_spark_v2_fixed --data "$DATA_PATH" "$@"
+python3 -m app.app_spark --data "$DATA_PATH" "$@"

@@ -2,6 +2,18 @@
 
 echo "🔄 Producer Loop - Continuous YouTube Data Streaming"
 
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$PROJECT_ROOT/.env"
+
+cd "$PROJECT_ROOT"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
 while true; do
   echo ""
   echo "[$(date '+%H:%M:%S')] Batch started..."
@@ -14,8 +26,7 @@ while true; do
   python3 -m app.producer_youtube \
     --kafka-servers localhost:9092 \
     --topic youtube_videos \
-    --source api \
-    --region-code US \
+    --region-code VN \
     --max-results 50 \
     --poll-interval 30 \
     --num-messages 50

@@ -4,9 +4,9 @@ set -euo pipefail
 # orchestrate_full_pipeline.sh
 # Run on the VM as the project user (thinh). It will:
 #  - check for Hadoop, install if missing (uses setup_hadoop_single_node.sh)
-#  - ensure HDFS/YARN are running
-#  - put raw CSV from local path into HDFS
-#  - run Spark pipeline reading from HDFS and save model/predictions back to HDFS
+#  - ensure HDFS/YARN are running when available
+#  - clean the raw CSV with Spark
+#  - train the model from the cleaned parquet output
 # Usage:
 #   sudo bash app/scripts/orchestrate_full_pipeline.sh /home/thinh/data/trending_yt_videos_113_countries.csv
 
@@ -58,17 +58,10 @@ if ! jps | grep -q ResourceManager; then
   ${HADOOP_INSTALL}/sbin/start-yarn.sh || true
 fi
 
-HDFS_INPUT_DIR="/user/${HDFS_USER}/input"
-HDFS_MODEL_DIR="/user/${HDFS_USER}/models/rf"
-HDFS_PRED_DIR="/user/${HDFS_USER}/predictions/rf"
+echo "Cleaning raw CSV into parquet..."
+RAW_DATA_PATH="${LOCAL_CSV}" python3 -m app.spark_data_cleaner
 
-echo "Putting local CSV into HDFS..."
-hdfs dfs -mkdir -p "${HDFS_INPUT_DIR}"
-hdfs dfs -put -f "${LOCAL_CSV}" "${HDFS_INPUT_DIR}/"
-
-HDFS_CSV_PATH="hdfs://localhost:9000${HDFS_INPUT_DIR}/*.csv"
-
-echo "Running Spark pipeline (reads from ${HDFS_CSV_PATH})"
+echo "Running Spark training pipeline on cleaned parquet..."
 cd "$PROJECT_ROOT"
-bash scripts/run_spark.sh "${HDFS_CSV_PATH}" --no-sample --num-trees ${NUM_TREES} --max-depth ${MAX_DEPTH} --save-model ${HDFS_MODEL_DIR} --save-predictions ${HDFS_PRED_DIR} --save-metrics /tmp/rf_metrics.json
-echo "Pipeline finished. Model saved to ${HDFS_MODEL_DIR}, predictions to ${HDFS_PRED_DIR} (HDFS)."
+bash scripts/run_spark.sh "data/cleaned_youtube_regression.parquet" --num-trees ${NUM_TREES} --max-depth ${MAX_DEPTH} --save-model "models/rf_regression_model"
+echo "Pipeline finished. Cleaned data saved to data/cleaned_youtube_regression.parquet and model saved to models/rf_regression_model."
