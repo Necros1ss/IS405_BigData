@@ -1,0 +1,62 @@
+# Development overrides for docker-compose.yml
+# This file is automatically merged with docker-compose.yml in development
+
+version: '3.8'
+
+services:
+  # Override Spark Master for development
+  spark-master:
+    environment:
+      SPARK_DAEMON_MEMORY: 1g
+      SPARK_EXECUTOR_MEMORY: 1g
+    ports:
+      - "4040:4040"  # Spark application UI
+
+  # Override Spark Worker for development
+  spark-worker-1:
+    environment:
+      SPARK_DAEMON_MEMORY: 512m
+      SPARK_EXECUTOR_MEMORY: 512m
+
+  # Development producer service (optional)
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: youtube-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:29092
+      YOUTUBE_TOPIC: youtube_videos
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+    networks:
+      - bigdata-network
+    volumes:
+      - ./app:/app
+      - ./data:/data
+    command: python -u app/producer_youtube.py --loop --interval 5
+    restart: unless-stopped
+
+  # Development Spark job consumer (optional)
+  spark-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spark-consumer
+    depends_on:
+      - spark-master
+      - kafka
+    environment:
+      SPARK_MASTER_URL: spark://spark-master:7077
+      KAFKA_BROKER: kafka:29092
+      YOUTUBE_TOPIC: youtube_videos
+    networks:
+      - bigdata-network
+    volumes:
+      - ./app:/app
+      - ./data:/data
+      - ./models:/models
+    command: spark-submit --master spark://spark-master:7077 /app/streaming_spark.py
+    restart: unless-stopped

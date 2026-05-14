@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Data & Models (optional - adjust as needed)
+# data/
+# models/
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# OS
+.DS_Store
+.env
+.env.local
+
+# Docker
+docker-compose.yml
+Dockerfile*
+.dockerignore
+
+# Testing
+tests/
+test_*.py
+
+# Logs
+*.log
+logs/
