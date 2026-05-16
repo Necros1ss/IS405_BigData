@@ -1,0 +1,17 @@
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Make pip more tolerant to slow networks during image build.
+ENV PIP_DEFAULT_TIMEOUT=300
+
+# Install only dashboard dependencies to keep image lightweight.
+COPY requirements-streamlit.txt ./
+RUN pip install --no-cache-dir --retries 5 -r requirements-streamlit.txt
+
+# Copy source code.
+COPY . /app/
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "app/streamlit_dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
