@@ -1,0 +1,51 @@
+# Virtualenvs
+.venv/
+.venv_spark/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data and models (don't commit large datasets or trained models)
+/kaggle_youtube/
+/data_final/
+/app/model/
+*.parquet
+*.csv
+*.h5
+*.pkl
+
+# Spark/Hadoop local artifacts
+*.log
+*.out
+*.err
+/tmp/*.json
+
+# Credentials
+.env
+*.pem
+*.key
+id_rsa*
+
+# Others
+*.zip
+*.tar.gz
+
