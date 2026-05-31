@@ -1,163 +1,54 @@
 #!/usr/bin/env python3
+"""Train the regression models from the cleaned parquet dataset."""
 
-import os
-import json
+import argparse
 import logging
+import os
+import sys
+from datetime import datetime
 
 from app.spark_bootstrap import ensure_spark_runtime
 
 ensure_spark_runtime()
 
-from pyspark.sql import functions as F
-from pyspark.ml.feature import (
-    VectorAssembler,
-    StringIndexer,
-    OneHotEncoder
-)
-from pyspark.ml.regression import RandomForestRegressor
-from pyspark.ml import Pipeline
-from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.sql import SparkSession
 
+from app.ml.training_pipeline import train_spark_model
+
+__all__ = ["train_spark_model"]
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-def train_spark_model(df, num_trees=100, max_depth=12):
-    # ============================================================
-    # TEMPORAL SPLIT
-    # ============================================================
-    cutoff_date = "2026-01-01"
 
-    print("\n" + "="*50)
-    print("⏳ SPLITTING DATA (TIME-BASED SPLIT)")
-    print("="*50)
-    print(f"   → Cutoff Date: {cutoff_date}")
-    print(f"   → Train data : Trước {cutoff_date}")
-    print(f"   → Test data  : Sau {cutoff_date} trở đi")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", default="data/cleaned_youtube_regression.parquet")
+    parser.add_argument("--num-trees", type=int, default=100)
+    parser.add_argument("--max-depth", type=int, default=12)
+    parser.add_argument("--save-model", default="models/rf_regression_model")
+    args = parser.parse_args()
 
-    train_df = df.filter(F.col("trending_date_parsed") < cutoff_date)
-    test_df = df.filter(F.col("trending_date_parsed") >= cutoff_date)
+    spark = SparkSession.builder.appName("YouTubeTrending_Orchestrator").config("spark.driver.memory", "4g").getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
 
-    train_count = train_df.count()
-    test_count = test_df.count()
+    logger.info("Starting training pipeline at %s", datetime.now().strftime("%H:%M:%S"))
 
-    print(f"Train rows: {train_count:,}")
-    print(f"Test rows : {test_count:,}")
+    if not os.path.exists(args.data):
+        logger.error("Data not found at %s. Run python3 -m app.spark_data_cleaner first.", args.data)
+        spark.stop()
+        sys.exit(1)
 
-    if test_count == 0:
-        raise Exception("Test dataset is empty. Choose another cutoff date.")
+    df_features = spark.read.parquet(args.data)
+    model, _, metrics = train_spark_model(df_features, args.num_trees, args.max_depth)
 
-    # ============================================================
-    # FEATURE PIPELINE
-    # ============================================================
-    feature_cols = [
-        "log_views", "log_likes", "log_comment_count",
-        "like_ratio", "comment_ratio", "title_length",
-        "publish_hour", "publish_dow", "log_hours_to_trending"
-    ]
+    if args.save_model:
+        model.write().overwrite().save(args.save_model)
+        logger.info("Saved best model to %s", args.save_model)
 
-    categorical_cols = [
-        "country",
-        "categoryId"
-    ]
+    logger.info("Training metrics: %s", metrics)
+    spark.stop()
 
-    indexers = [
-        StringIndexer(
-            inputCol=c,
-            outputCol=f"{c}_idx",
-            handleInvalid="keep"
-        )
-        for c in categorical_cols
-    ]
 
-    encoders = [
-        OneHotEncoder(
-            inputCol=f"{c}_idx",
-            outputCol=f"{c}_vec"
-        )
-        for c in categorical_cols
-    ]
-
-    final_feature_cols = (
-        feature_cols +
-        [f"{c}_vec" for c in categorical_cols]
-    )
-
-    assembler = VectorAssembler(
-        inputCols=final_feature_cols,
-        outputCol="features",
-        handleInvalid="keep"
-    )
-
-    # ============================================================
-    # MODEL (Nhận tham số từ file App Nhạc Trưởng)
-    # ============================================================
-    rf = RandomForestRegressor(
-        featuresCol="features",
-        labelCol="log_trending_days",
-        predictionCol="raw_prediction",
-        numTrees=num_trees,   # Lấy từ Terminal
-        maxDepth=max_depth,   # Lấy từ Terminal
-        seed=42
-    )
-
-    pipeline = Pipeline(
-        stages=[
-            *indexers,
-            *encoders,
-            assembler,
-            rf
-        ]
-    )
-    
-    print("\nTraining RandomForestRegressor...")
-    model = pipeline.fit(train_df)
-
-    # ============================================================
-    # PREDICTION & CACHE
-    # ============================================================
-    print("Running predictions...")
-    predictions = model.transform(test_df)
-    predictions = predictions.withColumn("prediction", F.expr("expm1(raw_prediction)")).cache()
-
-    # ============================================================
-    # BASELINE & EVALUATION
-    # ============================================================
-    mean_val = train_df.select(F.avg("trending_days").alias("mean_val")).collect()[0]["mean_val"]
-    predictions = predictions.withColumn("baseline_prediction", F.lit(mean_val))
-
-    rmse_eval = RegressionEvaluator(labelCol="trending_days", predictionCol="prediction", metricName="rmse")
-    mae_eval = RegressionEvaluator(labelCol="trending_days", predictionCol="prediction", metricName="mae")
-    r2_eval = RegressionEvaluator(labelCol="trending_days", predictionCol="prediction", metricName="r2")
-
-    model_rmse = rmse_eval.evaluate(predictions)
-    model_mae = mae_eval.evaluate(predictions)
-    model_r2 = r2_eval.evaluate(predictions)
-
-    baseline_df = predictions.drop("prediction").withColumnRenamed("baseline_prediction", "prediction")
-    baseline_rmse = rmse_eval.evaluate(baseline_df)
-
-    print("\n" + "=" * 80)
-    print("REGRESSION RESULTS")
-    print("=" * 80)
-    print(f"\n[BASELINE] Predict average trending days = {mean_val:.2f} | RMSE: {baseline_rmse:.4f}")
-    print(f"\n[MODEL] RMSE: {model_rmse:.4f} | MAE : {model_mae:.4f} | R²  : {model_r2:.4f}")
-
-    if model_rmse < baseline_rmse:
-        print("\n✓ SUCCESS: Model outperforms baseline")
-    else:
-        print("\n✗ WARNING: Model worse than baseline")
-
-    # ============================================================
-    # SAVE METRICS (File app_spark sẽ lo việc lưu model)
-    # ============================================================
-    METRICS_PATH = "metrics/regression_metrics.json"
-    metrics = {
-        "rmse": float(model_rmse), "mae": float(model_mae), "r2": float(model_r2),
-        "baseline_rmse": float(baseline_rmse),
-        "train_rows": int(train_count), "test_rows": int(test_count),
-        "features": feature_cols
-    }
-    os.makedirs(os.path.dirname(METRICS_PATH), exist_ok=True)
-    with open(METRICS_PATH, "w") as f:
-        json.dump(metrics, f, indent=4)
-
-    return model, predictions, metrics
+if __name__ == "__main__":
+    main()

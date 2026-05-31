@@ -28,7 +28,7 @@ cd "/home/thinh/Documents/IS_BigData/BigData/FINAL PROJECT"
 
 # If docker gives permission denied, use sudo or add your user to the docker group.
 # Start the full stack: Kafka, Zookeeper, Kafka UI, Spark, and Streamlit.
-sudo docker compose up -d zookeeper kafka kafka-ui streamlit
+sudo docker compose up -d
 
 # Wait ~15 seconds for Kafka to be ready
 sleep 15
@@ -53,6 +53,74 @@ echo "   📊 Kafka UI: http://localhost:8080"
 echo "   📈 Streamlit: http://localhost:8501"
 echo "   📤 Producer: Running (check with: ./status.sh)"
 ```
+
+---
+
+## 🧭 Architecture
+
+```mermaid
+flowchart LR
+  A[YouTube Dataset / API] --> B[Kafka Producer]
+  B --> C[Kafka Topic: youtube_videos]
+  C --> D[Spark Cleaning + Feature Engineering]
+  D --> E[Episode-level Target Builder]
+  E --> F[Model Training]
+  F --> G[RandomForest / Linear / GBT]
+  G --> H[Prediction Topic: youtube_predictions]
+  H --> I[Streamlit Dashboard]
+```
+
+The training pipeline now creates one sample per continuous trending episode, so a video that disappears and later returns to Trending is handled as a separate episode instead of being merged into one label.
+
+---
+
+## 🔁 Data Flow
+
+1. The producer fetches live trending videos from the YouTube API and publishes JSON to Kafka.
+2. Spark Structured Streaming validates the payload, engineers features, loads the trained pipeline, and writes predictions back to Kafka.
+3. The batch cleaner builds the training set from historical CSV data, detects trending episodes, and produces `trending_days` per episode.
+4. The training job compares RandomForest, Linear Regression, and Gradient Boosting, then saves the best model plus comparison metrics.
+5. The Streamlit dashboard consumes predictions, shows live charts, and reads saved metrics for RMSE / MAE / R², model comparison, and feature importance.
+
+---
+
+## 🤖 Model Training
+
+The main training entrypoint is:
+
+```bash
+python3 -m app.train_spark --data data/cleaned_youtube_regression.parquet
+```
+
+What it does:
+
+1. Splits the data by time to avoid future leakage.
+2. Trains and compares a Linear Regression baseline, Gradient Boosting, and a tuned RandomForestRegressor.
+3. Tunes the RandomForest with Spark CrossValidator over `numTrees`, `maxDepth`, `minInstancesPerNode`, and `maxBins`.
+4. Saves the best model to `models/rf_regression_model` and metrics to `metrics/regression_metrics.json`.
+
+---
+
+## 🚢 Deployment
+
+Start the platform with:
+
+```bash
+docker compose up -d
+```
+
+This starts Kafka, Zookeeper, Kafka UI, Spark master/worker, and Streamlit. The dashboard container mounts both `models/` and `metrics/`, so it can render saved training results without rebuilding the image.
+
+To refresh the data pipeline manually:
+
+```bash
+python3 -m app.spark_data_cleaner
+python3 -m app.train_spark
+python3 -m app.predict_spark --model-path models/rf_regression_model --data data/cleaned_youtube_regression.parquet
+python3 -m app.streaming_spark --model-path models/rf_regression_model --checkpoint-dir /tmp/spark_chkpt_youtube
+```
+
+Nếu bạn đã cài thêm `xgboost` và `lightgbm` trong `requirements.txt`, training job sẽ tự động đưa hai mô hình này vào bảng so sánh; nếu chưa cài, job vẫn chạy bình thường với các model Spark MLlib.
 
 ---
 
@@ -128,10 +196,10 @@ cd "/home/thinh/Documents/IS_BigData/BigData/FINAL PROJECT"
 # 1) Clean data (reads CSV from data/, outputs parquet)
 python3 -m app.spark_data_cleaner
 
-# 2) Train Random Forest model
-python3 -m app.app_spark \
+# 2) Train and compare models
+python3 -m app.train_spark \
   --data "data/cleaned_youtube_regression.parquet" \
-  --num-trees 20 --max-depth 6 \
+  --num-trees 100 --max-depth 12 \
   --save-model "models/rf_regression_model"
 ```
 

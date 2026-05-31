@@ -33,17 +33,22 @@ def safe_json_deserializer(raw_message):
         logger.warning(f"Skipping malformed Kafka message: {e}")
         return None
 
-# Configuration
+# ============================================================
+# CONFIGURATION
+# ============================================================
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
-YOUTUBE_TOPIC = os.getenv("YOUTUBE_TOPIC", "youtube_videos")
-STREAMLIT_GROUP_ID = os.getenv("STREAMLIT_GROUP_ID", "streamlit-dashboard-v2")
+# Đã đổi sang nghe topic chứa kết quả dự đoán của Spark ML
+YOUTUBE_TOPIC = os.getenv("YOUTUBE_TOPIC", "youtube_predictions")
+STREAMLIT_GROUP_ID = os.getenv("STREAMLIT_GROUP_ID", "streamlit-dashboard-v3")
+STREAMLIT_AUTO_OFFSET_RESET = os.getenv("STREAMLIT_AUTO_OFFSET_RESET", "earliest")
+METRICS_PATH = os.getenv("METRICS_PATH", "metrics/regression_metrics.json")
 
 # ============================================================
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(
     page_title="Real-time YouTube Trending Dashboard",
-    page_icon="📊",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -73,7 +78,7 @@ def get_kafka_consumer():
             consumer = KafkaConsumer(
                 YOUTUBE_TOPIC,
                 bootstrap_servers=[KAFKA_BROKER],
-                auto_offset_reset='latest',
+                auto_offset_reset=STREAMLIT_AUTO_OFFSET_RESET,
                 enable_auto_commit=True,
                 group_id=STREAMLIT_GROUP_ID,
                 value_deserializer=safe_json_deserializer,
@@ -110,6 +115,9 @@ def initialize_session_state():
     if 'consumer_active' not in st.session_state:
         st.session_state.consumer_active = True
 
+    if 'consumer_bootstrapped' not in st.session_state:
+        st.session_state.consumer_bootstrapped = False
+
 
 def poll_kafka_messages(max_messages=25):
     """Poll Kafka messages in Streamlit runtime context."""
@@ -120,6 +128,14 @@ def poll_kafka_messages(max_messages=25):
         return
 
     try:
+        if STREAMLIT_AUTO_OFFSET_RESET == "earliest" and not st.session_state.consumer_bootstrapped:
+            consumer.poll(timeout_ms=1000, max_records=1)
+            assignments = list(consumer.assignment())
+            if assignments:
+                consumer.seek_to_beginning(*assignments)
+                st.session_state.consumer_bootstrapped = True
+                logger.info("Bootstrapped Kafka consumer to the beginning of the topic")
+
         records = consumer.poll(timeout_ms=200, max_records=max_messages)
 
         for _, partition_records in records.items():
@@ -128,6 +144,12 @@ def poll_kafka_messages(max_messages=25):
                     continue
 
                 data = message.value
+                # Normalize prediction field names so UI logic can rely on `predicted_trending_days`
+                raw_pred = data.get('predicted_trending_days', data.get('prediction', 0))
+                try:
+                    data['predicted_trending_days'] = float(raw_pred or 0)
+                except Exception:
+                    data['predicted_trending_days'] = 0.0
 
                 # Add timestamp
                 data['timestamp'] = datetime.now()
@@ -136,20 +158,19 @@ def poll_kafka_messages(max_messages=25):
                 # Store video data
                 st.session_state.videos_data.append(data)
 
-                # Extract metrics for charting
+                # Extract metrics for charting (THÊM predicted_trending_days VÀO ĐÂY)
                 metrics_point = {
                     'timestamp': data['timestamp'],
                     'views': float(data.get('views', 0) or data.get('view_count', 0)),
                     'likes': float(data.get('likes', 0)),
                     'comments': float(data.get('comment_count', 0)),
+                    'predicted_trending_days': float(data.get('predicted_trending_days', 0)),
                     'video_id': data.get('video_id', 'Unknown')
                 }
                 st.session_state.metrics_data.append(metrics_point)
 
                 st.session_state.message_count += 1
                 st.session_state.last_update = datetime.now()
-
-                logger.info(f"📥 Received message #{st.session_state.message_count}: {data.get('title', 'N/A')}")
 
         st.session_state.consumer_active = True
 
@@ -181,6 +202,7 @@ def create_views_timeline():
         mode='lines+markers',
         name='Views',
         line=dict(color='#1f77b4', width=2),
+        fill='tozeroy',  # Đổi sang dạng Area chart cho đẹp
         marker=dict(size=6),
         hovertemplate='<b>Views:</b> %{y:,.0f}<br><b>Time:</b> %{x}<extra></extra>'
     ))
@@ -189,7 +211,7 @@ def create_views_timeline():
         title='📈 Real-time Views Timeline',
         xaxis_title='Time',
         yaxis_title='Number of Views',
-        template='plotly_white',
+        template='plotly_dark' if st.get_option("theme.base") == "dark" else 'plotly_white',
         hovermode='x unified',
         height=400
     )
@@ -240,7 +262,7 @@ def create_engagement_metrics():
         title='📊 Engagement Metrics (Normalized)',
         xaxis_title='Time',
         yaxis_title='Normalized Value (%)',
-        template='plotly_white',
+        template='plotly_dark' if st.get_option("theme.base") == "dark" else 'plotly_white',
         hovermode='x unified',
         height=400
     )
@@ -249,13 +271,13 @@ def create_engagement_metrics():
 
 
 def create_metrics_distribution():
-    """Create metrics distribution charts"""
+    """Create metrics distribution charts - Tích hợp Biểu đồ Dự đoán"""
     if not st.session_state.metrics_data:
         return
 
     df = pd.DataFrame(list(st.session_state.metrics_data))
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
     with col1:
         fig = px.histogram(df, x='views', nbins=20, title='Views Distribution')
@@ -267,9 +289,72 @@ def create_metrics_distribution():
         fig.update_layout(height=300)
         st.plotly_chart(fig, use_container_width=True)
 
+    col3, col4 = st.columns(2)
+
     with col3:
         fig = px.histogram(df, x='comments', nbins=20, title='Comments Distribution')
         fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col4:
+        fig = px.histogram(
+            df,
+            x='predicted_trending_days',
+            nbins=20,
+            title='Trending-days Histogram',
+            color_discrete_sequence=['#e76f51']
+        )
+        fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+@st.cache_data(ttl=30)
+def load_training_metrics():
+    """Load model comparison metrics saved by the training job."""
+    if not os.path.exists(METRICS_PATH):
+        return {}
+
+    try:
+        with open(METRICS_PATH, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:
+        logger.warning("Unable to read training metrics from %s: %s", METRICS_PATH, exc)
+        return {}
+
+
+def display_model_insights(metrics):
+    """Render the RMSE/MAE/R² panel and comparison table."""
+    if not metrics:
+        st.info("Model metrics are not available yet. Run the training job first.")
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Best model", metrics.get("best_model", "N/A"))
+    with col2:
+        st.metric("RMSE", f"{float(metrics.get('rmse', 0.0)):.4f}")
+    with col3:
+        st.metric("MAE", f"{float(metrics.get('mae', 0.0)):.4f}")
+    with col4:
+        st.metric("R²", f"{float(metrics.get('r2', 0.0)):.4f}")
+
+    st.subheader("Model comparison")
+    comparison = pd.DataFrame(metrics.get("model_comparison", []))
+    if not comparison.empty:
+        st.dataframe(comparison.sort_values("rmse"), use_container_width=True)
+
+    feature_importance = pd.DataFrame(metrics.get("feature_importance", []))
+    if not feature_importance.empty:
+        fig = px.bar(
+            feature_importance.head(15),
+            x="importance",
+            y="feature",
+            orientation="h",
+            title="Feature importance",
+            color="importance",
+            color_continuous_scale="Viridis",
+        )
+        fig.update_layout(height=500, yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -281,26 +366,24 @@ def create_statistics_table():
     df = pd.DataFrame(list(st.session_state.metrics_data))
 
     stats = {
-        'Metric': ['Views', 'Likes', 'Comments'],
+        'Metric': ['Views', 'Likes', 'Comments', 'Predicted Days'],
         'Mean': [
             f"{df['views'].mean():,.0f}",
             f"{df['likes'].mean():,.0f}",
-            f"{df['comments'].mean():,.0f}"
+            f"{df['comments'].mean():,.0f}",
+            f"{df['predicted_trending_days'].mean():,.1f}"
         ],
         'Max': [
             f"{df['views'].max():,.0f}",
             f"{df['likes'].max():,.0f}",
-            f"{df['comments'].max():,.0f}"
+            f"{df['comments'].max():,.0f}",
+            f"{df['predicted_trending_days'].max():,.1f}"
         ],
         'Min': [
             f"{df['views'].min():,.0f}",
             f"{df['likes'].min():,.0f}",
-            f"{df['comments'].min():,.0f}"
-        ],
-        'Std Dev': [
-            f"{df['views'].std():,.0f}",
-            f"{df['likes'].std():,.0f}",
-            f"{df['comments'].std():,.0f}"
+            f"{df['comments'].min():,.0f}",
+            f"{df['predicted_trending_days'].min():,.1f}"
         ]
     }
 
@@ -308,7 +391,7 @@ def create_statistics_table():
 
 
 def display_latest_videos():
-    """Display latest videos received"""
+    """Display latest videos received - Tích hợp Emoji 🔥⚡❄️"""
     if not st.session_state.videos_data:
         st.info("⏳ No videos received yet")
         return
@@ -319,12 +402,17 @@ def display_latest_videos():
     for idx, video in enumerate(videos_list[:10], 1):
         col1, col2 = st.columns([3, 1])
 
+        # Lấy số ngày dự đoán và gán mác Hotness
+        days = float(video.get('predicted_trending_days', video.get('prediction', 0)))
+        icon = "🔥 [KHỦNG]" if days >= 7.0 else ("⚡ [TRUNG BÌNH]" if days >= 2.0 else "❄️ [CHÌM]")
+
         with col1:
-            st.write(f"**{idx}. {video.get('title', 'N/A')}**")
-            st.caption(f"ID: {video.get('video_id', 'N/A')} | {video.get('timestamp_str', 'N/A')}")
+            st.write(f"**{idx}. {icon} {video.get('title', 'Unknown Title')}**")
+            st.caption(f"ID: {video.get('video_id', 'N/A')} | Quốc gia: {video.get('country', 'N/A')} | {video.get('timestamp_str', 'N/A')}")
 
         with col2:
-            st.metric("Views", f"{int(video.get('views', 0) or video.get('view_count', 0)):,}")
+            st.metric("Dự đoán Trending", f"{days:.1f} ngày")
+            st.caption(f"Views: {int(video.get('views', 0)):,}")
 
 
 # ============================================================
@@ -337,8 +425,8 @@ def main():
     st_autorefresh(interval=2000, key="kafka_autorefresh")
 
     # Header
-    st.title("🎥 Real-time YouTube Trending Dashboard")
-    st.markdown("### Powered by Kafka Streaming & Apache Spark")
+    st.title("🎥 Real-time YouTube Trending Predictor")
+    st.markdown("### Powered by Kafka Streaming & Apache Spark ML")
 
     # Sidebar
     with st.sidebar:
@@ -346,7 +434,7 @@ def main():
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Kafka Broker", KAFKA_BROKER.split(':')[0])
+            st.metric("Kafka Broker", KAFKA_BROKER)
         with col2:
             st.metric("Topic", YOUTUBE_TOPIC)
 
@@ -378,23 +466,25 @@ def main():
 
         st.divider()
         st.info("""
-        📡 **How it works:**
-        1. Producer sends YouTube data to Kafka
-        2. Dashboard subscribes to topic
-        3. Real-time visualization updates
+        📡 **Hệ thống hoạt động:**
+        1. Spark Structured Streaming nhận video từ Kafka.
+        2. ML Pipeline dự đoán số ngày lọt Top Trending.
+        3. Đẩy kết quả sang topic Prediction.
+        4. Dashboard hứng và hiển thị Real-time.
         """)
 
     # Main content
     try:
-        # Poll Kafka messages in a Streamlit-safe way.
+        training_metrics = load_training_metrics()
+
         if st.session_state.consumer_active:
             poll_kafka_messages()
 
-        # Key Metrics
+        # Key Metrics - Thêm cột thứ 5 cho AI Prediction
         if st.session_state.metrics_data:
             df_metrics = pd.DataFrame(list(st.session_state.metrics_data))
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("📊 Avg Views", f"{df_metrics['views'].mean():,.0f}")
             with col2:
@@ -402,22 +492,30 @@ def main():
             with col3:
                 st.metric("💬 Avg Comments", f"{df_metrics['comments'].mean():,.0f}")
             with col4:
+                # Cột hiển thị trung bình số ngày trend dự đoán
+                st.metric("🎯 Avg Trend Days", f"{df_metrics['predicted_trending_days'].mean():,.1f}")
+            with col5:
                 st.metric("📈 Data Points", len(df_metrics))
         else:
-            st.warning("⏳ Waiting for data from Kafka topic...")
+            st.warning(f"⏳ Waiting for AI Predictions from topic '{YOUTUBE_TOPIC}'...")
+
+        st.divider()
+
+        st.subheader("Model Performance")
+        display_model_insights(training_metrics)
 
         st.divider()
 
         # Tabs for different views
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 Real-time Trends", "📊 Engagement Analysis", "📉 Distribution", "📋 Latest Videos"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 Real-time Trends", "📋 Bảng Phong Thần (AI Dự Đoán)", "📉 Phân bổ & Thống kê", "📊 Engagement Analysis"])
 
         with tab1:
             st.subheader("Real-time Views Timeline")
             create_views_timeline()
 
         with tab2:
-            st.subheader("Normalized Engagement Metrics")
-            create_engagement_metrics()
+            st.subheader("Bảng Xếp Hạng Video Mới Nhất")
+            display_latest_videos()
 
         with tab3:
             st.subheader("Metrics Distribution")
@@ -426,8 +524,8 @@ def main():
             create_statistics_table()
 
         with tab4:
-            st.subheader("Latest Videos Received")
-            display_latest_videos()
+            st.subheader("Normalized Engagement Metrics")
+            create_engagement_metrics()
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")

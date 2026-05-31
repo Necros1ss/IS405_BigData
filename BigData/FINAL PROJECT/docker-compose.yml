@@ -114,6 +114,8 @@ services:
       KAFKA_BROKER: kafka:29092
       YOUTUBE_TOPIC: youtube_videos
       STREAMLIT_GROUP_ID: streamlit-dashboard-v3
+      METRICS_PATH: /app/metrics/regression_metrics.json
+      MODEL_PATH: /app/models/rf_regression_model
     ports:
       - "8501:8501"
     networks:
@@ -121,6 +123,8 @@ services:
     volumes:
       - ./app:/app
       - ./data:/data
+      - ./metrics:/app/metrics
+      - ./models:/app/models
     command: streamlit run /app/streamlit_dashboard.py --server.port=8501 --server.address=0.0.0.0
 
 networks:

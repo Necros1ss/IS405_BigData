@@ -14,6 +14,8 @@ from datetime import datetime
 
 import requests
 from kafka import KafkaProducer
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     from app.config import (
@@ -90,7 +92,12 @@ def fetch_trending_videos(
     if category_id:
         params["videoCategoryId"] = str(category_id)
 
-    resp = requests.get(url, params=params, timeout=30)
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+
+    resp = session.get(url, params=params, timeout=30)
 
     resp.raise_for_status()
 
@@ -123,6 +130,7 @@ def fetch_trending_videos(
         video_data = {
             "video_id": item.get("id", ""),
             "title": snippet.get("title", ""),
+            "description": snippet.get("description", ""),
             "publish_time": snippet.get("publishedAt", ""),
             "tags": "|".join(
                 tags if isinstance(tags, list) else []
@@ -183,7 +191,7 @@ def main():
         "--rate",
         type=float,
         default=None,
-        help="Messages per second alias for quick demo (overrides --poll-interval as 1/rate)"
+        help="Messages per second alias for quick run (overrides --poll-interval as 1/rate)"
     )
 
     parser.add_argument(
@@ -230,7 +238,10 @@ def main():
 
         acks="all",
 
-        retries=3
+        retries=5,
+        linger_ms=100,
+        compression_type="gzip",
+        retry_backoff_ms=1000,
     )
 
     print("\n========================================")
@@ -322,7 +333,7 @@ def main():
                 )
 
             except Exception as e:
-                logger.exception("Producer error occurred")
+                logger.exception("Producer error occurred: %s", e)
 
                 time.sleep(5)
 
