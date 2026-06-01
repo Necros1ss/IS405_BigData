@@ -1,19 +1,47 @@
 {
-    "rmse": 3.6042794881725544,
-    "mae": 2.0597965296435023,
-    "r2": 0.19220969594513915,
-    "baseline_rmse": 4.374088606503409,
-    "train_rows": 156229,
-    "test_rows": 79973,
-    "features": [
-        "log_views",
-        "log_likes",
-        "log_comment_count",
-        "like_ratio",
-        "comment_ratio",
-        "title_length",
-        "publish_hour",
-        "publish_dow",
-        "log_hours_to_trending"
-    ]
+  "best_model": "gradient_boosting",
+  "best_overall_model": "gradient_boosting",
+  "rmse": 2.5532135058344596,
+  "mae": 1.2799248821348073,
+  "r2": 0.38980529746465387,
+  "baseline_rmse": 3.52541180302179,
+  "baseline_mae": 2.6805326626893127,
+  "baseline_r2": -0.1633593246708669,
+  "model_comparison": [
+    {
+      "model_name": "linear_regression",
+      "rmse": 2.765724030948758,
+      "mae": 1.4207541096716945,
+      "r2": 0.2840019273238775,
+      "model_family": "spark"
+    },
+    {
+      "model_name": "gradient_boosting",
+      "rmse": 2.5532135058344596,
+      "mae": 1.2799248821348073,
+      "r2": 0.38980529746465387,
+      "model_family": "spark"
+    },
+    {
+      "model_name": "random_forest",
+      "rmse": 2.658770527543968,
+      "mae": 1.3179711986485658,
+      "r2": 0.33830800790892,
+      "model_family": "spark"
+    },
+    {
+      "model_name": "mean_baseline",
+      "rmse": 3.52541180302179,
+      "mae": 2.6805326626893127,
+      "r2": -0.1633593246708669,
+      "model_family": "spark"
+    }
+  ],
+  "aggregated_models": [
+    "linear_regression",
+    "gradient_boosting",
+    "random_forest",
+    "mean_baseline"
+  ],
+  "best_model_dir": "models/gradient_boosting"
 }

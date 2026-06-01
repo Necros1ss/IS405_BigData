@@ -3,6 +3,8 @@
 
 import json
 import os
+import time
+import logging
 from typing import List, Tuple
 
 import numpy as np
@@ -16,6 +18,20 @@ from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import functions as F
 
 from app.utils.feature_engineering import add_shared_features
+
+logger = logging.getLogger(__name__)
+
+
+def _sanitize_model_name(model_name):
+    return model_name.replace(" ", "_").replace("/", "_")
+
+
+def _save_spark_model(model, model_name, base_dir="models"):
+    if model is None:
+        return None
+    model_dir = os.path.join(base_dir, _sanitize_model_name(model_name))
+    model.write().overwrite().save(model_dir)
+    return model_dir
 
 try:
     from xgboost import XGBRegressor
@@ -114,11 +130,9 @@ def _feature_importance_from_model(model, feature_names):
     return []
 
 
-def _to_optional_model_frame(df, numeric_features, categorical_features, sample_limit=50000, seed=42):
+def _to_optional_model_frame(df, numeric_features, categorical_features):
     selected_cols = [*numeric_features, *categorical_features, LABEL_COL]
     optional_df = df.select(*selected_cols)
-    if optional_df.count() > sample_limit:
-        optional_df = optional_df.orderBy(F.rand(seed)).limit(sample_limit)
     pdf = optional_df.toPandas()
 
     for column in numeric_features + [LABEL_COL]:
@@ -174,7 +188,9 @@ def _train_optional_model(model_name, estimator_factory, train_pdf, test_pdf, ca
 
 
 def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
+    overall_start = time.perf_counter()
     df = add_shared_features(df, snapshot_ts_col="trending_date_parsed")
+    feature_start = time.perf_counter()
     cutoff_date = "2026-01-01"
     train_df = df.filter(F.col("trending_date_parsed") < cutoff_date)
     test_df = df.filter(F.col("trending_date_parsed") >= cutoff_date)
@@ -186,64 +202,139 @@ def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
         raise ValueError("Test dataset is empty. Choose another cutoff date.")
 
     numeric_features, categorical_features = get_feature_columns()
+    keep_columns = [
+        "trending_date_parsed",
+        "country",
+        "categoryId",
+        LABEL_COL,
+        TARGET_COL,
+        *numeric_features,
+        "views_normalized",
+        "log_views",
+        "log_likes",
+        "log_comment_count",
+        "engagement_rate",
+        "like_ratio",
+        "comment_ratio",
+        "views_per_hour",
+        "likes_per_hour",
+        "comments_per_hour",
+        "title_length",
+        "description_length",
+        "tag_count",
+        "publish_hour",
+        "publish_day_of_week",
+        "log_hours_to_trending",
+    ]
+    keep_columns = list(dict.fromkeys(column for column in keep_columns if column in df.columns))
+    df = df.select(*keep_columns)
+    train_df = df.filter(F.col("trending_date_parsed") < cutoff_date)
+    test_df = df.filter(F.col("trending_date_parsed") >= cutoff_date)
+
+    logger.info(
+        "Prepared train/test split in %.2fs (train=%s, test=%s)",
+        time.perf_counter() - feature_start,
+        train_count,
+        test_count,
+    )
+
     feature_names = numeric_features + [f"{column}_vec" for column in categorical_features]
 
     candidate_results = []
     optional_results = []
+    training_failures = []
+    fast_mode = os.getenv("TRAIN_FAST_MODE", "0").lower() in {"1", "true", "yes"}
+    ultra_fast_mode = os.getenv("TRAIN_ULTRA_FAST_MODE", "0").lower() in {"1", "true", "yes"}
+    selected_model = os.getenv("TRAIN_MODEL", "all").lower()
+    if selected_model != "all":
+        os.environ["DISABLE_OPTIONAL_MODELS"] = "1"
+    model_output_dir = os.getenv("MODEL_OUTPUT_DIR", "models")
+    os.makedirs(model_output_dir, exist_ok=True)
 
     def fit_and_score(model_name, estimator, use_cv=False, param_grid=None):
-        pipeline = _build_pipeline(numeric_features, categorical_features, estimator)
-        if use_cv:
-            cross_validator = CrossValidator(
-                estimator=pipeline,
-                estimatorParamMaps=param_grid,
-                evaluator=RegressionEvaluator(labelCol=TARGET_COL, predictionCol="raw_prediction", metricName="rmse"),
-                numFolds=3,
-                parallelism=2,
-                seed=42,
+        stage_start = time.perf_counter()
+        try:
+            pipeline = _build_pipeline(numeric_features, categorical_features, estimator)
+            if use_cv:
+                cross_validator = CrossValidator(
+                    estimator=pipeline,
+                    estimatorParamMaps=param_grid,
+                    evaluator=RegressionEvaluator(labelCol=TARGET_COL, predictionCol="raw_prediction", metricName="rmse"),
+                    numFolds=3,
+                    parallelism=2,
+                    seed=42,
+                )
+                cv_model = cross_validator.fit(train_df)
+                model = cv_model.bestModel
+            else:
+                model = pipeline.fit(train_df)
+
+            predictions = _prepare_predictions(model, test_df)
+            scores = {
+                **_evaluate_predictions(predictions),
+                "model_name": model_name,
+            }
+            candidate_results.append((model_name, model, predictions, scores))
+            _save_spark_model(model, model_name, base_dir=model_output_dir)
+            with open(os.path.join(model_output_dir, _sanitize_model_name(model_name) + "_metrics.json"), "w", encoding="utf-8") as handle:
+                json.dump(scores, handle, indent=2)
+            logger.info("Trained %s in %.2fs", model_name, time.perf_counter() - stage_start)
+            return model, predictions, scores
+        except Exception as exc:
+            training_failures.append({"model_name": model_name, "error": str(exc)})
+            logger.exception("Training failed for %s after %.2fs", model_name, time.perf_counter() - stage_start)
+            return None, None, None
+
+    if selected_model == "linear_regression":
+        lr_estimator = LinearRegression(
+            featuresCol="features",
+            labelCol=TARGET_COL,
+            predictionCol="raw_prediction",
+            maxIter=80,
+            regParam=0.05,
+        )
+        fit_and_score("linear_regression", lr_estimator, use_cv=False)
+    elif selected_model in {"gradient_boosting", "gbt"}:
+        gbt_estimator = GBTRegressor(
+            featuresCol="features",
+            labelCol=TARGET_COL,
+            predictionCol="raw_prediction",
+            seed=42,
+            maxIter=60,
+            maxDepth=6,
+        )
+        fit_and_score("gradient_boosting", gbt_estimator, use_cv=False)
+    elif selected_model == "random_forest":
+        rf_estimator = RandomForestRegressor(
+            featuresCol="features",
+            labelCol=TARGET_COL,
+            predictionCol="raw_prediction",
+            seed=42,
+            numTrees=num_trees,
+            maxDepth=max_depth,
+        )
+
+        if tune:
+            rf_param_grid = (
+                ParamGridBuilder()
+                .addGrid(rf_estimator.numTrees, sorted({max(20, num_trees - 20), num_trees, num_trees + 20}))
+                .addGrid(rf_estimator.maxDepth, sorted({max(4, max_depth - 2), max_depth, max_depth + 2}))
+                .addGrid(rf_estimator.minInstancesPerNode, [1, 2])
+                .addGrid(rf_estimator.maxBins, [32, 64])
+                .build()
             )
-            cv_model = cross_validator.fit(train_df)
-            model = cv_model.bestModel
+            fit_and_score("random_forest_tuned", rf_estimator, use_cv=True, param_grid=rf_param_grid)
         else:
-            model = pipeline.fit(train_df)
-
-        predictions = _prepare_predictions(model, test_df)
-        scores = {
-            **_evaluate_predictions(predictions),
-            "model_name": model_name,
-        }
-        candidate_results.append((model_name, model, predictions, scores))
-        return model, predictions, scores
-
-    lr_estimator = LinearRegression(
-        featuresCol="features",
-        labelCol=TARGET_COL,
-        predictionCol="raw_prediction",
-        maxIter=80,
-        regParam=0.05,
-    )
-    fit_and_score("linear_regression", lr_estimator, use_cv=False)
-
-    gbt_estimator = GBTRegressor(
-        featuresCol="features",
-        labelCol=TARGET_COL,
-        predictionCol="raw_prediction",
-        seed=42,
-        maxIter=60,
-        maxDepth=6,
-    )
-    fit_and_score("gradient_boosting", gbt_estimator, use_cv=False)
-
-    rf_estimator = RandomForestRegressor(
-        featuresCol="features",
-        labelCol=TARGET_COL,
-        predictionCol="raw_prediction",
-        seed=42,
-        numTrees=num_trees,
-        maxDepth=max_depth,
-    )
-
-    if tune:
+            fit_and_score("random_forest", rf_estimator, use_cv=False)
+    elif selected_model == "random_forest_tuned":
+        rf_estimator = RandomForestRegressor(
+            featuresCol="features",
+            labelCol=TARGET_COL,
+            predictionCol="raw_prediction",
+            seed=42,
+            numTrees=num_trees,
+            maxDepth=max_depth,
+        )
         rf_param_grid = (
             ParamGridBuilder()
             .addGrid(rf_estimator.numTrees, sorted({max(20, num_trees - 20), num_trees, num_trees + 20}))
@@ -253,21 +344,104 @@ def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
             .build()
         )
         fit_and_score("random_forest_tuned", rf_estimator, use_cv=True, param_grid=rf_param_grid)
-    else:
-        fit_and_score("random_forest", rf_estimator, use_cv=False)
+    elif selected_model == "all":
+        if ultra_fast_mode:
+            lr_estimator = LinearRegression(
+                featuresCol="features",
+                labelCol=TARGET_COL,
+                predictionCol="raw_prediction",
+                maxIter=80,
+                regParam=0.05,
+            )
+            fit_and_score("linear_regression", lr_estimator, use_cv=False)
+        elif fast_mode:
+            rf_estimator = RandomForestRegressor(
+                featuresCol="features",
+                labelCol=TARGET_COL,
+                predictionCol="raw_prediction",
+                seed=42,
+                numTrees=num_trees,
+                maxDepth=max_depth,
+            )
 
-    baseline_mean = train_df.select(F.avg(LABEL_COL).alias("baseline_mean")).first()["baseline_mean"] or 0.0
+            if tune:
+                rf_param_grid = (
+                    ParamGridBuilder()
+                    .addGrid(rf_estimator.numTrees, sorted({max(20, num_trees - 20), num_trees, num_trees + 20}))
+                    .addGrid(rf_estimator.maxDepth, sorted({max(4, max_depth - 2), max_depth, max_depth + 2}))
+                    .addGrid(rf_estimator.minInstancesPerNode, [1, 2])
+                    .addGrid(rf_estimator.maxBins, [32, 64])
+                    .build()
+                )
+                fit_and_score("random_forest_tuned", rf_estimator, use_cv=True, param_grid=rf_param_grid)
+            else:
+                fit_and_score("random_forest", rf_estimator, use_cv=False)
+        else:
+            lr_estimator = LinearRegression(
+                featuresCol="features",
+                labelCol=TARGET_COL,
+                predictionCol="raw_prediction",
+                maxIter=80,
+                regParam=0.05,
+            )
+            fit_and_score("linear_regression", lr_estimator, use_cv=False)
+
+            gbt_estimator = GBTRegressor(
+                featuresCol="features",
+                labelCol=TARGET_COL,
+                predictionCol="raw_prediction",
+                seed=42,
+                maxIter=60,
+                maxDepth=6,
+            )
+            fit_and_score("gradient_boosting", gbt_estimator, use_cv=False)
+
+            rf_estimator = RandomForestRegressor(
+                featuresCol="features",
+                labelCol=TARGET_COL,
+                predictionCol="raw_prediction",
+                seed=42,
+                numTrees=num_trees,
+                maxDepth=max_depth,
+            )
+
+            if tune:
+                rf_param_grid = (
+                    ParamGridBuilder()
+                    .addGrid(rf_estimator.numTrees, sorted({max(20, num_trees - 20), num_trees, num_trees + 20}))
+                    .addGrid(rf_estimator.maxDepth, sorted({max(4, max_depth - 2), max_depth, max_depth + 2}))
+                    .addGrid(rf_estimator.minInstancesPerNode, [1, 2])
+                    .addGrid(rf_estimator.maxBins, [32, 64])
+                    .build()
+                )
+                fit_and_score("random_forest_tuned", rf_estimator, use_cv=True, param_grid=rf_param_grid)
+            else:
+                fit_and_score("random_forest", rf_estimator, use_cv=False)
+    else:
+        raise ValueError(f"Unsupported TRAIN_MODEL value: {selected_model}")
+
+    baseline_mean = train_df.select(F.avg(F.col(LABEL_COL)).alias("baseline_mean")).first()["baseline_mean"] or 0.0
     baseline_predictions = test_df.withColumn("prediction", F.lit(float(baseline_mean)))
     baseline_scores = {
         **_evaluate_predictions(baseline_predictions),
         "model_name": "mean_baseline",
     }
     candidate_results.append(("mean_baseline", None, baseline_predictions, baseline_scores))
+    with open(os.path.join(model_output_dir, "mean_baseline_metrics.json"), "w", encoding="utf-8") as handle:
+        json.dump(baseline_scores, handle, indent=2)
+    logger.info("Computed mean baseline in %.2fs", 0.0)
 
-    train_pdf = _to_optional_model_frame(train_df, numeric_features, categorical_features)
-    test_pdf = _to_optional_model_frame(test_df, numeric_features, categorical_features, sample_limit=15000)
+    disable_optional_models = os.getenv("DISABLE_OPTIONAL_MODELS", "0").lower() in {"1", "true", "yes"}
+    optional_models_enabled = not disable_optional_models and (XGBRegressor is not None or LGBMRegressor is not None)
 
-    if XGBRegressor is not None:
+    train_pdf = None
+    test_pdf = None
+    if optional_models_enabled:
+        train_pdf = _to_optional_model_frame(train_df, numeric_features, categorical_features)
+        test_pdf = _to_optional_model_frame(test_df, numeric_features, categorical_features)
+
+    if optional_models_enabled and XGBRegressor is not None:
+        optional_start = time.perf_counter()
         optional_xgb = _train_optional_model(
             "xgboost",
             lambda: XGBRegressor(
@@ -285,8 +459,10 @@ def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
         )
         if optional_xgb is not None:
             optional_results.append(optional_xgb)
+        logger.info("Trained optional xgboost in %.2fs", time.perf_counter() - optional_start)
 
-    if LGBMRegressor is not None:
+    if optional_models_enabled and LGBMRegressor is not None:
+        optional_start = time.perf_counter()
         optional_lgbm = _train_optional_model(
             "lightgbm",
             lambda: LGBMRegressor(
@@ -303,9 +479,14 @@ def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
         )
         if optional_lgbm is not None:
             optional_results.append(optional_lgbm)
+        logger.info("Trained optional lightgbm in %.2fs", time.perf_counter() - optional_start)
+
+    valid_candidates = [result for result in candidate_results if result[1] is not None]
+    if not valid_candidates:
+        raise RuntimeError("No Spark model completed successfully.")
 
     best_name, best_model, best_predictions, best_scores = min(
-        (result for result in candidate_results if result[1] is not None),
+        valid_candidates,
         key=lambda item: item[3]["rmse"],
     )
 
@@ -349,6 +530,9 @@ def train_spark_model(df, num_trees=100, max_depth=12, tune=True):
         "model_comparison": comparison_rows,
         "feature_importance": _feature_importance_from_model(best_model, feature_names),
         "optional_model_comparison": optional_results,
+        "training_failures": training_failures,
+        "runtime_seconds": round(time.perf_counter() - overall_start, 2),
+        "saved_model_dir": model_output_dir,
     }
 
     os.makedirs("metrics", exist_ok=True)

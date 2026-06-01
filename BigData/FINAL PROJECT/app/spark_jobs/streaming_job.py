@@ -92,7 +92,12 @@ def run_stream():
     )
 
     parsed_df = parsed_df.withColumn("parsed_trending_date", F.current_timestamp())
-    parsed_df = parsed_df.withColumn("publish_timestamp", F.to_timestamp(F.col("publish_time")))
+    parsed_df = parsed_df.withColumn(
+        "publish_timestamp",
+        F.to_timestamp(
+            F.when(F.length(F.trim(F.coalesce(F.col("publish_time").cast("string"), F.lit("")))) == 0, F.lit(None)).otherwise(F.col("publish_time"))
+        ),
+    )
 
     features_df = add_shared_features(parsed_df, snapshot_ts_col="parsed_trending_date")
     predictions = model.transform(features_df)

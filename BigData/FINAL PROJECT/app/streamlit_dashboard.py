@@ -14,6 +14,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from kafka import KafkaConsumer
+from kafka.structs import TopicPartition
 from kafka.errors import KafkaError
 from streamlit_autorefresh import st_autorefresh
 
@@ -37,8 +38,8 @@ def safe_json_deserializer(raw_message):
 # CONFIGURATION
 # ============================================================
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
-# Đã đổi sang nghe topic chứa kết quả dự đoán của Spark ML
-YOUTUBE_TOPIC = os.getenv("YOUTUBE_TOPIC", "youtube_predictions")
+# Nghe topic chứa kết quả dự đoán của Spark ML
+PREDICTIONS_TOPIC = os.getenv("PREDICTIONS_TOPIC", os.getenv("YOUTUBE_TOPIC", "youtube_predictions"))
 STREAMLIT_GROUP_ID = os.getenv("STREAMLIT_GROUP_ID", "streamlit-dashboard-v3")
 STREAMLIT_AUTO_OFFSET_RESET = os.getenv("STREAMLIT_AUTO_OFFSET_RESET", "earliest")
 METRICS_PATH = os.getenv("METRICS_PATH", "metrics/regression_metrics.json")
@@ -76,16 +77,23 @@ def get_kafka_consumer():
     while retry_count < max_retries:
         try:
             consumer = KafkaConsumer(
-                YOUTUBE_TOPIC,
                 bootstrap_servers=[KAFKA_BROKER],
                 auto_offset_reset=STREAMLIT_AUTO_OFFSET_RESET,
-                enable_auto_commit=True,
-                group_id=STREAMLIT_GROUP_ID,
+                enable_auto_commit=False,
                 value_deserializer=safe_json_deserializer,
                 session_timeout_ms=30000,
                 max_poll_records=1
             )
-            logger.info(f"✅ Connected to Kafka broker: {KAFKA_BROKER}, Topic: {YOUTUBE_TOPIC}")
+            partitions = consumer.partitions_for_topic(PREDICTIONS_TOPIC)
+            if not partitions:
+                raise RuntimeError(f"No partitions available for topic {PREDICTIONS_TOPIC}")
+
+            topic_partitions = [TopicPartition(PREDICTIONS_TOPIC, partition) for partition in sorted(partitions)]
+            consumer.assign(topic_partitions)
+            if STREAMLIT_AUTO_OFFSET_RESET == "earliest":
+                consumer.seek_to_beginning(*topic_partitions)
+
+            logger.info(f"✅ Connected to Kafka broker: {KAFKA_BROKER}, Topic: {PREDICTIONS_TOPIC}")
             return consumer
         except Exception as e:
             retry_count += 1
@@ -118,6 +126,35 @@ def initialize_session_state():
     if 'consumer_bootstrapped' not in st.session_state:
         st.session_state.consumer_bootstrapped = False
 
+    # Cache file to persist messages across browser refreshes
+    if 'cache_path' not in st.session_state:
+        st.session_state.cache_path = os.path.join('metrics', 'streamlit_cache.json')
+
+    # Load persisted cache if exists to survive F5
+    if os.path.exists(st.session_state.cache_path) and not st.session_state.videos_data:
+        try:
+            with open(st.session_state.cache_path, 'r', encoding='utf-8') as fh:
+                payload = json.load(fh)
+                for item in payload.get('videos', []):
+                    # Ensure timestamp objects converted back
+                    if isinstance(item.get('timestamp'), str):
+                        try:
+                            item['timestamp'] = datetime.fromisoformat(item['timestamp'])
+                            item['timestamp_str'] = item['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            item['timestamp'] = datetime.now()
+                    st.session_state.videos_data.append(item)
+                for m in payload.get('metrics', []):
+                    if isinstance(m.get('timestamp'), str):
+                        try:
+                            m['timestamp'] = datetime.fromisoformat(m['timestamp'])
+                        except Exception:
+                            m['timestamp'] = datetime.now()
+                    st.session_state.metrics_data.append(m)
+                st.session_state.message_count = payload.get('message_count', st.session_state.message_count)
+        except Exception as exc:
+            logger.warning("Unable to load streamlit cache: %s", exc)
+
 
 def poll_kafka_messages(max_messages=25):
     """Poll Kafka messages in Streamlit runtime context."""
@@ -128,15 +165,10 @@ def poll_kafka_messages(max_messages=25):
         return
 
     try:
-        if STREAMLIT_AUTO_OFFSET_RESET == "earliest" and not st.session_state.consumer_bootstrapped:
-            consumer.poll(timeout_ms=1000, max_records=1)
-            assignments = list(consumer.assignment())
-            if assignments:
-                consumer.seek_to_beginning(*assignments)
-                st.session_state.consumer_bootstrapped = True
-                logger.info("Bootstrapped Kafka consumer to the beginning of the topic")
-
         records = consumer.poll(timeout_ms=200, max_records=max_messages)
+        record_count = sum(len(partition_records) for partition_records in records.values())
+        if record_count:
+            logger.info("Kafka poll fetched %s record(s)", record_count)
 
         for _, partition_records in records.items():
             for message in partition_records:
@@ -150,6 +182,12 @@ def poll_kafka_messages(max_messages=25):
                     data['predicted_trending_days'] = float(raw_pred or 0)
                 except Exception:
                     data['predicted_trending_days'] = 0.0
+
+                logger.info(
+                    "Parsed prediction for video_id=%s predicted_trending_days=%s",
+                    data.get('video_id', 'Unknown'),
+                    data['predicted_trending_days'],
+                )
 
                 # Add timestamp
                 data['timestamp'] = datetime.now()
@@ -171,6 +209,24 @@ def poll_kafka_messages(max_messages=25):
 
                 st.session_state.message_count += 1
                 st.session_state.last_update = datetime.now()
+
+                # Persist cache to disk so a browser refresh (F5) doesn't lose data
+                try:
+                    cache_payload = {
+                        'videos': list(st.session_state.videos_data),
+                        'metrics': [
+                            {
+                                **{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in m.items()}
+                            } for m in list(st.session_state.metrics_data)
+                        ],
+                        'message_count': st.session_state.message_count
+                    }
+
+                    os.makedirs(os.path.dirname(st.session_state.cache_path), exist_ok=True)
+                    with open(st.session_state.cache_path, 'w', encoding='utf-8') as fh:
+                        json.dump(cache_payload, fh, default=str)
+                except Exception as exc:
+                    logger.debug("Unable to write streamlit cache: %s", exc)
 
         st.session_state.consumer_active = True
 
@@ -399,7 +455,8 @@ def display_latest_videos():
     videos_list = list(st.session_state.videos_data)
     videos_list.reverse()  # Show newest first
 
-    for idx, video in enumerate(videos_list[:10], 1):
+    max_show = int(st.session_state.get('max_videos_display', 10))
+    for idx, video in enumerate(videos_list[:max_show], 1):
         col1, col2 = st.columns([3, 1])
 
         # Lấy số ngày dự đoán và gán mác Hotness
@@ -436,7 +493,7 @@ def main():
         with col1:
             st.metric("Kafka Broker", KAFKA_BROKER)
         with col2:
-            st.metric("Topic", YOUTUBE_TOPIC)
+            st.metric("Topic", PREDICTIONS_TOPIC)
 
         st.divider()
 
@@ -451,6 +508,13 @@ def main():
 
         st.divider()
 
+        # Display controls
+        st.subheader("Display")
+        max_videos_display = st.slider("Max videos to show", min_value=5, max_value=50, value=10, step=1)
+        st.session_state.max_videos_display = max_videos_display
+
+        st.divider()
+
         # Start Consumer Button
         col1, col2 = st.columns(2)
         with col1:
@@ -462,6 +526,24 @@ def main():
                 st.session_state.videos_data.clear()
                 st.session_state.metrics_data.clear()
                 st.session_state.message_count = 0
+                # Reset Kafka consumer offsets so the dashboard can re-read historical messages
+                try:
+                    consumer = get_kafka_consumer()
+                    if consumer:
+                        partitions = consumer.partitions_for_topic(PREDICTIONS_TOPIC)
+                        if partitions:
+                            topic_partitions = [TopicPartition(PREDICTIONS_TOPIC, p) for p in sorted(partitions)]
+                            consumer.assign(topic_partitions)
+                            consumer.seek_to_beginning(*topic_partitions)
+                            logger.info("Consumer offsets reset to beginning for topic %s", PREDICTIONS_TOPIC)
+                except Exception as e:
+                    logger.warning("Unable to reset Kafka consumer offsets: %s", e)
+                # Clear persistent cache
+                try:
+                    if os.path.exists(st.session_state.cache_path):
+                        os.remove(st.session_state.cache_path)
+                except Exception:
+                    pass
                 st.rerun()
 
         st.divider()
@@ -497,7 +579,7 @@ def main():
             with col5:
                 st.metric("📈 Data Points", len(df_metrics))
         else:
-            st.warning(f"⏳ Waiting for AI Predictions from topic '{YOUTUBE_TOPIC}'...")
+            st.warning(f"⏳ Waiting for AI Predictions from topic '{PREDICTIONS_TOPIC}'...")
 
         st.divider()
 
@@ -507,7 +589,7 @@ def main():
         st.divider()
 
         # Tabs for different views
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 Real-time Trends", "📋 Bảng Phong Thần (AI Dự Đoán)", "📉 Phân bổ & Thống kê", "📊 Engagement Analysis"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 Real-time Trends", "📋 Predict Trending Video", "📉 Phân bổ & Thống kê", "📊 Engagement Analysis"])
 
         with tab1:
             st.subheader("Real-time Views Timeline")

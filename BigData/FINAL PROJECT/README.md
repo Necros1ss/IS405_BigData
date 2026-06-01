@@ -48,6 +48,8 @@ nohup python3 -m app.producer_youtube \
   --poll-interval 20 \
   > producer_real.log 2>&1 &
 
+# The producer loads YOUTUBE_API_KEY from .env automatically and will wait for Kafka if the broker is not up yet.
+
 echo "✅ Services ready!"
 echo "   📊 Kafka UI: http://localhost:8080"
 echo "   📈 Streamlit: http://localhost:8501"
@@ -70,7 +72,7 @@ flowchart LR
   H --> I[Streamlit Dashboard]
 ```
 
-The training pipeline now creates one sample per continuous trending episode, so a video that disappears and later returns to Trending is handled as a separate episode instead of being merged into one label.
+The training pipeline now keeps full episode history per continuous trending window, so a video that disappears and later returns to Trending is handled as a separate episode instead of being merged into one label.
 
 ---
 
@@ -81,6 +83,8 @@ The training pipeline now creates one sample per continuous trending episode, so
 3. The batch cleaner builds the training set from historical CSV data, detects trending episodes, and produces `trending_days` per episode.
 4. The training job compares RandomForest, Linear Regression, and Gradient Boosting, then saves the best model plus comparison metrics.
 5. The Streamlit dashboard consumes predictions, shows live charts, and reads saved metrics for RMSE / MAE / R², model comparison, and feature importance.
+
+Realtime prediction output is shown in the consumer terminal from `app.consumer_predictions`, after `app.streaming_spark` publishes messages to the `youtube_predictions` Kafka topic.
 
 ---
 
@@ -98,6 +102,32 @@ What it does:
 2. Trains and compares a Linear Regression baseline, Gradient Boosting, and a tuned RandomForestRegressor.
 3. Tunes the RandomForest with Spark CrossValidator over `numTrees`, `maxDepth`, `minInstancesPerNode`, and `maxBins`.
 4. Saves the best model to `models/rf_regression_model` and metrics to `metrics/regression_metrics.json`.
+
+If you want the safer workflow that trains one model per run and can resume after reconnect, use:
+
+```bash
+./train_models_resume_wrapper.sh
+tail -f logs/train_models_resume_*.log
+```
+
+That wrapper trains `linear_regression`, `gradient_boosting`, and `random_forest` in separate runs, then aggregates the results with `app.ml.aggregate_training_metrics` and copies the best model to `models/rf_regression_model` for prediction.
+
+If you prefer explicit one-command-per-model runs, use:
+
+```bash
+./train_one_model.sh linear_regression
+./train_one_model.sh gradient_boosting
+./train_one_model.sh random_forest
+python3 -m app.ml.aggregate_training_metrics
+```
+
+If you want the tuned RandomForest instead of the plain one, replace the third line with:
+
+```bash
+./train_one_model.sh random_forest_tuned
+```
+
+After aggregation, the best model is copied to `models/rf_regression_model`, so `python3 -m app.predict_spark --model-path models/rf_regression_model` always uses the latest winner.
 
 ---
 
@@ -119,6 +149,15 @@ python3 -m app.train_spark
 python3 -m app.predict_spark --model-path models/rf_regression_model --data data/cleaned_youtube_regression.parquet
 python3 -m app.streaming_spark --model-path models/rf_regression_model --checkpoint-dir /tmp/spark_chkpt_youtube
 ```
+
+If your SSH session tends to reconnect or drop during training, use the detached wrapper instead:
+
+```bash
+./train_predict_wrapper.sh
+tail -f logs/train_predict_*.log
+```
+
+The wrapper defaults to the ultra-fast path, so it runs only Linear Regression plus the baseline and skips the heavyweight Spark models that can crash the JVM on constrained machines.
 
 Nếu bạn đã cài thêm `xgboost` và `lightgbm` trong `requirements.txt`, training job sẽ tự động đưa hai mô hình này vào bảng so sánh; nếu chưa cài, job vẫn chạy bình thường với các model Spark MLlib.
 
@@ -187,6 +226,62 @@ sudo docker compose up -d
 ---
 
 ## 📊 Running Pipelines
+
+### Realtime Run (Kafka → Spark → Streamlit)
+
+> Dùng mục này nếu bạn muốn xem dự đoán realtime trên dashboard.
+
+```bash
+cd "/home/thinh/Documents/IS_BigData/BigData/FINAL PROJECT"
+
+# 1) Start Kafka + Zookeeper
+sudo docker compose up -d zookeeper kafka
+
+# 2) Create topics
+sudo docker exec kafka kafka-topics --create --topic youtube_videos \
+  --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1 --if-not-exists
+sudo docker exec kafka kafka-topics --create --topic youtube_predictions \
+  --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1 --if-not-exists
+
+# 3) Start streaming scorer (reads youtube_videos, writes youtube_predictions)
+python3 -m app.streaming_spark \
+  --kafka-servers localhost:9092 \
+  --input-topic youtube_videos \
+  --output-topic youtube_predictions \
+  --model-path models/rf_regression_model \
+  --checkpoint-dir /tmp/spark_chkpt_youtube \
+  --checkpoint-policy unique
+
+# 4) Start YouTube producer in background
+nohup python3 -m app.producer_youtube \
+  --kafka-servers localhost:9092 \
+  --topic youtube_videos \
+  --region-code VN \
+  --max-results 10 \
+  --poll-interval 20 \
+  > producer_real.log 2>&1 &
+
+# 5) Start realtime consumer (optional, for terminal output)
+python3 -m app.consumer_predictions \
+  --kafka-servers localhost:9092 \
+  --topic youtube_predictions
+
+# 6) Start Streamlit dashboard
+sudo docker compose up -d streamlit
+# or: streamlit run app/streamlit_dashboard.py
+```
+
+Open the dashboard at **http://localhost:8501**.
+
+### Predict (Batch Inference)
+
+```bash
+cd "/home/thinh/Documents/IS_BigData/BigData/FINAL PROJECT"
+
+python3 -m app.predict_spark \
+  --model-path models/rf_regression_model \
+  --data data/cleaned_youtube_regression.parquet
+```
 
 ### Pipeline 1: Batch ETL + Train Model (Local)
 
@@ -271,6 +366,23 @@ streamlit run app/streamlit_dashboard.py
 ```
 
 Then open: **http://localhost:8501**
+
+### Quick Run (just predict + dashboard)
+
+```bash
+cd "/home/thinh/Documents/IS_BigData/BigData/FINAL PROJECT"
+
+# Batch predict from the latest trained model
+python3 -m app.predict_spark \
+  --model-path models/rf_regression_model \
+  --data data/cleaned_youtube_regression.parquet
+
+# Start Streamlit dashboard with Docker
+sudo docker compose up -d streamlit
+
+# Or start Streamlit locally
+streamlit run app/streamlit_dashboard.py
+```
 
 ---
 

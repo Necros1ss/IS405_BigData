@@ -112,7 +112,7 @@ services:
       - kafka
     environment:
       KAFKA_BROKER: kafka:29092
-      YOUTUBE_TOPIC: youtube_videos
+      YOUTUBE_TOPIC: youtube_predictions
       STREAMLIT_GROUP_ID: streamlit-dashboard-v3
       METRICS_PATH: /app/metrics/regression_metrics.json
       MODEL_PATH: /app/models/rf_regression_model

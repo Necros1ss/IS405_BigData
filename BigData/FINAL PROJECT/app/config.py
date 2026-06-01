@@ -1,11 +1,32 @@
 import os
+from pathlib import Path
+
 try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = None
 
 if load_dotenv is not None:
-	load_dotenv()
+    project_root_env = Path(__file__).resolve().parents[1] / ".env"
+    load_dotenv(dotenv_path=project_root_env)
+    load_dotenv()
+else:
+    project_root_env = Path(__file__).resolve().parents[1] / ".env"
+    if project_root_env.is_file():
+        with project_root_env.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped.startswith("export "):
+                    stripped = stripped[len("export ") :]
+                if "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 YOUTUBE_TOPIC = os.getenv("YOUTUBE_TOPIC", "youtube_videos")

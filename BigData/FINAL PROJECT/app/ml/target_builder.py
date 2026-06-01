@@ -35,6 +35,12 @@ OPTIONAL_DEFAULTS = {
 REQUIRED_COLS = ["video_id", "publish_date", "trending_date", "view_count", "likes", "comment_count"]
 
 
+def _safe_to_timestamp(column_name):
+    return F.to_timestamp(
+        F.when(F.length(F.trim(F.coalesce(F.col(column_name).cast("string"), F.lit("")))) == 0, F.lit(None)).otherwise(F.col(column_name))
+    )
+
+
 def standardize_columns(df):
     for old_col, new_col in RENAME_MAP.items():
         if old_col in df.columns and old_col != new_col:
@@ -51,13 +57,14 @@ def standardize_columns(df):
     for col_name in ["view_count", "likes", "comment_count"]:
         df = df.withColumn(col_name, F.regexp_replace(F.col(col_name).cast("string"), ",", "").cast(DoubleType()))
 
+    publish_date_str = F.trim(F.coalesce(F.col("publish_date").cast("string"), F.lit("")))
+
     df = df.withColumn(
         "publish_timestamp",
-        F.coalesce(
-            F.to_timestamp("publish_date", "yyyy-MM-dd'T'HH:mm:ss'Z'"),
-            F.to_timestamp("publish_date", "yyyy-MM-dd HH:mm:ss"),
-            F.to_timestamp("publish_date"),
-        ),
+        F.when(
+            F.length(publish_date_str) == 0,
+            F.lit(None).cast("timestamp"),
+        ).otherwise(F.to_timestamp(publish_date_str, "yyyy-MM-dd'T'HH:mm:ssX")),
     )
     df = df.withColumn(
         "trending_date_parsed",

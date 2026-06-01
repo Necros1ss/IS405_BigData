@@ -12,14 +12,14 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 
-def predict_from_dataset(model, data_path="data/cleaned_youtube_regression.parquet", sample_size=20, seed=42):
+def predict_from_dataset(model, data_path="data/cleaned_youtube_regression.parquet"):
     """Run predictions on real rows loaded from the cleaned training dataset."""
 
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Dataset not found: {data_path}")
 
     spark_sess = SparkSession.builder.getOrCreate()
-    df_new = spark_sess.read.parquet(data_path).orderBy(F.rand(seed)).limit(sample_size)
+    df_new = spark_sess.read.parquet(data_path)
     preds = model.transform(df_new)
     preds = preds.withColumn(
         "predicted_trending_days",
@@ -44,13 +44,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--data", default="data/cleaned_youtube_regression.parquet")
-    parser.add_argument("--sample-size", type=int, default=20)
     args = parser.parse_args()
 
     from pyspark.ml import PipelineModel
 
+    spark = SparkSession.builder.appName("YouTubeTrendingPrediction").getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
     model = PipelineModel.load(args.model_path)
-    predict_from_dataset(model, data_path=args.data, sample_size=args.sample_size)
+    predict_from_dataset(model, data_path=args.data)
+    spark.stop()
 
 
 if __name__ == "__main__":
