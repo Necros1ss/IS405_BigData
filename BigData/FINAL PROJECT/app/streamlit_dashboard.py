@@ -79,10 +79,10 @@ def get_kafka_consumer():
             consumer = KafkaConsumer(
                 bootstrap_servers=[KAFKA_BROKER],
                 auto_offset_reset=STREAMLIT_AUTO_OFFSET_RESET,
-                enable_auto_commit=False,
+                enable_auto_commit=True,
                 value_deserializer=safe_json_deserializer,
                 session_timeout_ms=30000,
-                max_poll_records=1
+                max_poll_records=100
             )
             partitions = consumer.partitions_for_topic(PREDICTIONS_TOPIC)
             if not partitions:
@@ -156,7 +156,7 @@ def initialize_session_state():
             logger.warning("Unable to load streamlit cache: %s", exc)
 
 
-def poll_kafka_messages(max_messages=25):
+def poll_kafka_messages(max_messages=150):
     """Poll Kafka messages in Streamlit runtime context."""
     consumer = get_kafka_consumer()
 
